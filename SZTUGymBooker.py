@@ -1,0 +1,358 @@
+"""
+体育馆自动化订票脚本
+
+流程: sessionlist → create → pay
+根据 HAR 抓包格式实现，三个接口均为 POST JSON。
+支持通过统一身份认证自动获取 JWT 令牌，无需手动抓包。
+"""
+
+import requests
+import time
+import sys
+import os
+import urllib3
+from datetime import datetime
+
+# ============================================================
+# 配置加载
+# ============================================================
+
+CONFIG_HELP = """请创建 config.toml，参考以下格式:
+
+[account]
+username = "202400000000"
+password = "your_password"
+
+[booking]
+venue_id = 4
+block_type = 1
+site_date_type = 2
+session_type = 0
+target_start_time = "17:30:00"
+poll_interval = 1
+retry_interval = 1
+max_retries = 60
+"""
+
+try:
+    import tomllib
+except ImportError:
+    # Python < 3.11 fallback
+    try:
+        import tomli as tomllib
+    except ImportError:
+        print("❌ 需要 tomllib (Python 3.11+) 或 tomli 库来解析配置文件")
+        print("   pip install tomli")
+        sys.exit(1)
+
+config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.toml")
+
+try:
+    with open(config_path, "rb") as f:
+        config = tomllib.load(f)
+    STUDENT_ID = config["account"]["username"]
+    PASSWORD = config["account"]["password"]
+    bk = config["booking"]
+    VENUE_ID = bk["venue_id"]
+    BLOCK_TYPE = bk["block_type"]
+    SITE_DATE_TYPE = bk["site_date_type"]
+    SESSION_TYPE = bk["session_type"]
+    TARGET_START_TIME = bk["target_start_time"]
+    POLL_INTERVAL = bk["poll_interval"]
+    RETRY_INTERVAL = bk["retry_interval"]
+    MAX_RETRIES = bk["max_retries"]
+except FileNotFoundError:
+    print(f"❌ 找不到配置文件 {config_path}")
+    print(CONFIG_HELP)
+    sys.exit(1)
+except KeyError as e:
+    print(f"❌ 配置文件缺少字段: {e}")
+    print(CONFIG_HELP)
+    sys.exit(1)
+except Exception as e:
+    print(f"❌ 读取配置文件失败: {e}")
+    sys.exit(1)
+
+# ============================================================
+# 认证: 从 gym_auth 获取 JWT 令牌
+# ============================================================
+
+from gym_auth import get_gym_token, GymAuthError
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+BASE_URL = "https://gym.sztu.edu.cn/mapi"
+
+# 基础请求头（不含 token，启动时动态填入）
+BASE_HEADERS = {
+    "Content-Type": "application/json",
+    "Accept": "*/*",
+    "Referer": "https://servicewechat.com/wx841f34453e694e39/19/page-frame.html",
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 "
+        "MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI "
+        "MiniProgramEnv/Mac MacWechat/WMPF MacWechat/3.8.7(0x13080712) "
+        "UnifiedPCMacWechat(0xf2641a1f) XWEB/19934"
+    ),
+}
+
+
+def log(msg: str) -> None:
+    """带时间戳的日志输出"""
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def fetch_token() -> str:
+    """获取 JWT 令牌，失败时自动重试"""
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            log("正在获取认证令牌...")
+            token = get_gym_token(STUDENT_ID, PASSWORD)
+            log("✅ 认证令牌获取成功")
+            return token
+        except GymAuthError as e:
+            log(f"❌ 认证失败 (第{attempt}次): {e}")
+            if attempt == max_attempts:
+                raise
+            wait = 2 ** attempt
+            log(f"   {wait} 秒后重试...")
+            time.sleep(wait)
+        except requests.RequestException as e:
+            log(f"❌ 网络错误 (第{attempt}次): {e}")
+            if attempt == max_attempts:
+                raise
+            wait = 5
+            log(f"   {wait} 秒后重试...")
+            time.sleep(wait)
+
+
+def build_session(token: str) -> requests.Session:
+    """创建带认证令牌的请求会话"""
+    s = requests.Session()
+    s.headers.update(BASE_HEADERS)
+    s.headers["Web-X-Auth-Token"] = token
+    s.verify = False
+    return s
+
+
+# ============================================================
+# 全局可变 session（支持令牌刷新）
+# ============================================================
+
+_session: requests.Session | None = None
+_current_token: str | None = None
+
+
+def get_session() -> requests.Session:
+    """获取当前全局 session（延迟初始化）"""
+    global _session, _current_token
+    if _session is None:
+        _current_token = fetch_token()
+        _session = build_session(_current_token)
+    return _session
+
+
+def refresh_token() -> None:
+    """刷新令牌并更新全局 session"""
+    global _session, _current_token
+    log("🔄 令牌已过期，正在刷新...")
+    _current_token = fetch_token()
+    _session = build_session(_current_token)
+
+
+# ============================================================
+# Step 1: 获取场次列表，筛选目标时段
+# ============================================================
+
+def get_target_session_id() -> int | None:
+    """
+    请求 sessionlist（仅调用一次），返回匹配 TARGET_START_TIME 的场次 id。
+    不判断 stock —— 库存由 create 接口负责校验。
+    """
+    url = f"{BASE_URL}/venue/site/session/list"
+    payload = {
+        "venueId": VENUE_ID,
+        "blockType": BLOCK_TYPE,
+        "siteDateType": SITE_DATE_TYPE,
+        "sessionType": SESSION_TYPE,
+        "stock": None,
+        "timeQuantumType": None,
+    }
+
+    resp = _api_post(url, payload)
+    data = resp.json()
+
+    if data.get("code") != "Success":
+        raise RuntimeError(f"sessionlist 请求失败: {data}")
+
+    for date_str, sessions in data.get("data", {}).items():
+        for s in sessions:
+            if s.get("startTime") == TARGET_START_TIME:
+                log(
+                    f"✓ 锁定目标场次 | id={s['id']} date={date_str} "
+                    f"{s['startTime']}-{s['endTime']} "
+                    f"stock={s.get('stock', '-')} venue={s.get('venueSiteName', '-')}"
+                )
+                return s["id"]
+
+    return None
+
+
+# ============================================================
+# Step 2: 创建订单
+# ============================================================
+
+def create_order(site_session_id: int) -> str | None:
+    """
+    创建订单，返回 orderNo。
+    售罄时返回 None，其他错误抛出异常。
+    """
+    url = f"{BASE_URL}/user/order/create"
+    payload = {
+        "siteSessionId": site_session_id,
+        "payType": 5,
+    }
+
+    resp = _api_post(url, payload)
+    data = resp.json()
+
+    code = data.get("code")
+
+    if code == "TicketsSoldOut":
+        log(f"票已售罄 (status={data.get('status')})，继续轮询...")
+        return None
+
+    if code != "Success" or not data.get("success"):
+        raise RuntimeError(f"create 请求失败: {data}")
+
+    order_no = data["data"]["orderNo"]
+    log(f"✓ 订单创建成功 | orderNo={order_no}")
+    return order_no
+
+
+# ============================================================
+# Step 3: 支付订单
+# ============================================================
+
+def pay_order(order_no: str) -> bool:
+    """
+    支付订单，返回是否成功。
+    """
+    url = f"{BASE_URL}/pay/pay"
+    payload = {
+        "orderNo": order_no,
+        "payType": 5,
+    }
+
+    resp = _api_post(url, payload)
+    data = resp.json()
+
+    if data.get("code") != "Success" or not data.get("success"):
+        raise RuntimeError(f"pay 请求失败: {data}")
+
+    log(f"✓ 支付成功 | orderNo={order_no}")
+    return True
+
+
+# ============================================================
+# API 调用封装（含令牌刷新）
+# ============================================================
+
+def _needs_token_refresh(response: requests.Response) -> bool:
+    """判断响应是否指示令牌已过期"""
+    if response.status_code == 401:
+        return True
+    try:
+        data = response.json()
+        code = data.get("code", "")
+        if code in ("TokenExpired", "InvalidToken", "Unauthorized"):
+            return True
+        msg = data.get("message", data.get("msg", ""))
+        if "token" in str(msg).lower() and ("过期" in str(msg) or "无效" in str(msg) or "expired" in str(msg).lower()):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _api_post(url: str, payload: dict) -> requests.Response:
+    """
+    POST 请求封装，支持令牌自动刷新重试一次。
+    """
+    session = get_session()
+    try:
+        resp = session.post(url, json=payload, timeout=15)
+    except requests.RequestException:
+        raise
+
+    if _needs_token_refresh(resp):
+        refresh_token()
+        resp = get_session().post(url, json=payload, timeout=15)
+
+    return resp
+
+
+# ============================================================
+# 主流程
+# ============================================================
+
+def main() -> None:
+    log("══════════════════════════════════════")
+    log("体育馆自动订票脚本启动")
+    log(f"目标时段: {TARGET_START_TIME} | 场馆ID: {VENUE_ID}")
+    log(f"日期类型: {SITE_DATE_TYPE} (1=今天 2=明天)")
+    log(f"轮询间隔: {POLL_INTERVAL}s | 重试间隔: {RETRY_INTERVAL}s")
+    log("══════════════════════════════════════")
+
+    # Step 1: 获取目标场次 id（仅一次）
+    try:
+        site_session_id = get_target_session_id()
+    except Exception as e:
+        log(f"✗ sessionlist 请求异常: {e}")
+        sys.exit(1)
+
+    if site_session_id is None:
+        log(f"✗ 未找到目标时段 {TARGET_START_TIME} 的场次，请检查 SITE_DATE_TYPE 配置")
+        sys.exit(1)
+
+    # Step 2: 轮询创建订单（由 create 接口判断是否售罄）
+    attempt = 0
+    while True:
+        attempt += 1
+
+        if MAX_RETRIES > 0 and attempt > MAX_RETRIES:
+            log(f"已达最大重试次数 {MAX_RETRIES}，退出")
+            sys.exit(1)
+
+        log(f"--- 第 {attempt} 轮 ---")
+
+        try:
+            order_no = create_order(site_session_id)
+        except Exception as e:
+            log(f"✗ create 异常: {e}")
+            time.sleep(RETRY_INTERVAL)
+            continue
+
+        if order_no is None:
+            # 售罄，继续轮询
+            time.sleep(POLL_INTERVAL)
+            continue
+
+        # Step 3: 支付
+        time.sleep(0.2)
+        try:
+            pay_order(order_no)
+            log("══════════════════════════════════════")
+            log("🎉 订票成功！")
+            log("══════════════════════════════════════")
+            break
+        except Exception as e:
+            log(f"✗ pay 异常: {e}（订单 {order_no} 已创建但支付失败，请检查）")
+            time.sleep(RETRY_INTERVAL)
+            continue
+
+
+if __name__ == "__main__":
+    main()

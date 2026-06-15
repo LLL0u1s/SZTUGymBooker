@@ -1,0 +1,5 @@
+config.toml
+.claude
+__pycache__
+*.har
+sztu_course_selector.py
