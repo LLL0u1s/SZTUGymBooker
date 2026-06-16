@@ -31,6 +31,8 @@ target_start_time = "17:30:00"
 poll_interval = 1           # 售罄轮询间隔 (秒)
 retry_interval = 1          # 失败重试间隔 (秒)
 max_retries = 60            # 最大重试次数 (0=无限)
+mode = "serial"             # 抢票模式："serial"(串行) | "parallel"(并行)
+# concurrency = 5           # 并行模式并发请求数 (默认 5)
 ```
 
 ### 场馆列表
@@ -49,6 +51,11 @@ max_retries = 60            # 最大重试次数 (0=无限)
 
 ## 工作流程
 
+支持两种抢票模式，在 `config.toml` 中通过 `mode` 选择：
+
+- **`serial`（串行，默认）**：每轮发送 1 个 create 请求，售罄时轮询重试
+- **`parallel`（并行）**：每轮同时发送 N 个 create 请求（`concurrency` 控制），最先成功的订单立即支付
+
 ```text
 认证阶段（gym_auth.py，启动时自动执行）
   SAML 登录 auth.sztu.edu.cn → Gym OAuth2 → 获取 JWT
@@ -57,7 +64,7 @@ max_retries = 60            # 最大重试次数 (0=无限)
 sessionlist ──→ 获取目标场次 id（仅一次）
      │
      ▼
-  create ──→ 轮询下单（售罄时自动重试，token 过期自动刷新）
+  create ──→ 轮询下单（串行 1 路 / 并行 N 路，token 过期自动刷新）
      │
      ▼
    pay ──→ 支付订单

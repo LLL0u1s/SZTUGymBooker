@@ -26,6 +26,8 @@ target_start_time = "17:30:00"
 poll_interval = 1           # 售罄轮询间隔 (秒)
 retry_interval = 1          # 失败重试间隔 (秒)
 max_retries = 60            # 最大重试次数 (0=无限)
+mode = "serial"             # 抢票模式："serial"(串行) | "parallel"(并行)
+# concurrency = 5           # 并行模式并发请求数 (默认 5)
 ```
 
 ### 场馆列表（来自 /mapi/index/venue/list）

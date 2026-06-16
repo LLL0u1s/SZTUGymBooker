@@ -12,6 +12,7 @@ import sys
 import os
 import urllib3
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ============================================================
 # 配置加载
@@ -61,6 +62,8 @@ try:
     POLL_INTERVAL = bk["poll_interval"]
     RETRY_INTERVAL = bk["retry_interval"]
     MAX_RETRIES = bk["max_retries"]
+    BOOKING_MODE = bk.get("mode", "serial")         # "serial" | "parallel"
+    CONCURRENCY = bk.get("concurrency", 5)           # 并行模式下并发请求数
 except FileNotFoundError:
     print(f"❌ 找不到配置文件 {config_path}")
     print(CONFIG_HELP)
@@ -223,6 +226,9 @@ def create_order(site_session_id: int) -> str | None:
     if code == "TicketsSoldOut":
         log(f"票已售罄 (status={data.get('status')})，继续轮询...")
         return None
+    # elif code == "PleaseDoNotPlaceDuplicateOrders":
+    #     log("订单已存在，请勿重复下单")
+    #     return None
 
     if code != "Success" or not data.get("success"):
         raise RuntimeError(f"create 请求失败: {data}")
@@ -230,6 +236,74 @@ def create_order(site_session_id: int) -> str | None:
     order_no = data["data"]["orderNo"]
     log(f"✓ 订单创建成功 | orderNo={order_no}")
     return order_no
+
+
+# ============================================================
+# 并行创建订单（线程池 + 独立 session）
+# ============================================================
+
+def _create_session_with_token(token: str) -> requests.Session:
+    """为并行 worker 创建独立的 Session（非共享，线程安全）"""
+    s = requests.Session()
+    s.headers.update(BASE_HEADERS)
+    s.headers["Web-X-Auth-Token"] = token
+    s.verify = False
+    return s
+
+
+def parallel_create_orders(site_session_id: int, concurrency: int = 5) -> str | None:
+    """
+    并行创建订单 — 启动 N 个线程同时 POST create。
+    返回最先成功的 orderNo；全部售罄时返回 None。
+
+    不修改原有的串行版 create_order()。
+    """
+    # 防御：若 session 尚未初始化则先获取 token
+    token = _current_token
+    if token is None:
+        token = fetch_token()
+    url = f"{BASE_URL}/user/order/create"
+    payload = {"siteSessionId": site_session_id, "payType": 5}
+
+    def worker(session: requests.Session) -> str | None:
+        try:
+            resp = session.post(url, json=payload, timeout=15)
+            data = resp.json()
+            code = data.get("code")
+
+            if code == "TicketsSoldOut":
+                log(f"  [并行 worker] 票已售罄")
+                return None
+
+            if code == "PleaseDoNotPlaceDuplicateOrders":
+                log(f"  [并行 worker] 重复下单 (已有订单)")
+                return None
+
+            if code == "SystemError":
+                log(f"  [并行 worker] 系统繁忙: {data.get('msg', '')}")
+                return None
+
+            if code != "Success" or not data.get("success"):
+                raise RuntimeError(f"create 请求失败: {data}")
+
+            return data["data"]["orderNo"]
+        except Exception as e:
+            log(f"✗ [并行 worker] {e}")
+            return None
+
+    sessions = [_create_session_with_token(token) for _ in range(concurrency)]
+
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = [executor.submit(worker, s) for s in sessions]
+        for future in as_completed(futures):
+            order_no = future.result()
+            if order_no:
+                log(f"✓ 订单创建成功 | orderNo={order_no}")
+                return order_no
+
+    # 全部返回 None → 售罄
+    log("票已售罄，继续轮询...")
+    return None
 
 
 # ============================================================
@@ -295,12 +369,12 @@ def _api_post(url: str, payload: dict) -> requests.Response:
 
 
 # ============================================================
-# 主流程
+# 串行主流程
 # ============================================================
 
-def main() -> None:
+def serial_main() -> None:
     log("══════════════════════════════════════")
-    log("体育馆自动订票脚本启动")
+    log("体育馆自动订票脚本启动 [串行模式]")
     log(f"目标时段: {TARGET_START_TIME} | 场馆ID: {VENUE_ID}")
     log(f"日期类型: {SITE_DATE_TYPE} (1=今天 2=明天)")
     log(f"轮询间隔: {POLL_INTERVAL}s | 重试间隔: {RETRY_INTERVAL}s")
@@ -352,6 +426,76 @@ def main() -> None:
             log(f"✗ pay 异常: {e}（订单 {order_no} 已创建但支付失败，请检查）")
             time.sleep(RETRY_INTERVAL)
             continue
+
+
+# ============================================================
+# 并行主流程
+# ============================================================
+
+def parallel_main() -> None:
+    log("══════════════════════════════════════")
+    log("体育馆自动订票脚本启动 [并行模式]")
+    log(f"目标时段: {TARGET_START_TIME} | 场馆ID: {VENUE_ID}")
+    log(f"日期类型: {SITE_DATE_TYPE} (1=今天 2=明天)")
+    log(f"并发数: {CONCURRENCY} | 轮询间隔: {POLL_INTERVAL}s")
+    log("══════════════════════════════════════")
+
+    # Step 1: 获取目标场次 id（仅一次）
+    try:
+        site_session_id = get_target_session_id()
+    except Exception as e:
+        log(f"✗ sessionlist 请求异常: {e}")
+        sys.exit(1)
+
+    if site_session_id is None:
+        log(f"✗ 未找到目标时段 {TARGET_START_TIME} 的场次，请检查 SITE_DATE_TYPE 配置")
+        sys.exit(1)
+
+    # Step 2: 并行轮询创建订单
+    attempt = 0
+    while True:
+        attempt += 1
+
+        if MAX_RETRIES > 0 and attempt > MAX_RETRIES:
+            log(f"已达最大重试次数 {MAX_RETRIES}，退出")
+            sys.exit(1)
+
+        log(f"--- 第 {attempt} 轮 (并行 {CONCURRENCY} 路) ---")
+
+        try:
+            order_no = parallel_create_orders(site_session_id, CONCURRENCY)
+        except Exception as e:
+            log(f"✗ parallel create 异常: {e}")
+            time.sleep(RETRY_INTERVAL)
+            continue
+
+        if order_no is None:
+            time.sleep(POLL_INTERVAL)
+            continue
+
+        # Step 3: 支付（串行，使用现有 pay_order）
+        time.sleep(0.2)
+        try:
+            pay_order(order_no)
+            log("══════════════════════════════════════")
+            log("🎉 订票成功！")
+            log("══════════════════════════════════════")
+            break
+        except Exception as e:
+            log(f"✗ pay 异常: {e}（订单 {order_no} 已创建但支付失败，请检查）")
+            time.sleep(RETRY_INTERVAL)
+            continue
+
+
+# ============================================================
+# 入口（按模式分发）
+# ============================================================
+
+def main() -> None:
+    if BOOKING_MODE == "parallel":
+        parallel_main()
+    else:
+        serial_main()
 
 
 if __name__ == "__main__":
