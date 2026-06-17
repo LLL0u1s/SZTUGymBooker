@@ -10,6 +10,7 @@ import requests
 import time
 import sys
 import os
+import re
 import logging
 import urllib3
 from datetime import datetime
@@ -67,9 +68,24 @@ def _env(key, default):
     os.getenv 在 key 存在但值为 "" 时返回 ""，不回退到 default。
     当 GitHub Actions 由 schedule 触发时，inputs.* 均为空字符串，
     必须回退到 config.toml 中的值。
+
+    此外防御处理 GitHub Actions 传入完整 choice option 对象的情况：
+    '{"label" => "综合馆", "value" => "41"}' → 自动提取 '41'
     """
     val = os.getenv(key)
-    return val if val else default
+    if not val:
+        return default
+    # 防御：GitHub Actions 某些情况下会将 choice option 的完整对象
+    # {label, value} 作为字符串传入，而非仅取 value 字段。
+    # 匹配 Ruby hash (=>) / JSON (:) / TOML-like (=) 中的 value 键
+    if isinstance(val, str) and val.strip().startswith("{"):
+        m = re.search(r"""["']?value["']?\s*[=:>]+\s*["'](\d+)["']""", val)
+        if m:
+            logging.warning(
+                "⚠ %s 传入对象而非纯值，已自动提取 value=%s", key, m.group(1)
+            )
+            return m.group(1)
+    return val
 
 
 try:
