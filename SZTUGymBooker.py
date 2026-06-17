@@ -10,9 +10,21 @@ import requests
 import time
 import sys
 import os
+import logging
 import urllib3
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# ============================================================
+# 日志配置
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stdout,
+)
 
 # ============================================================
 # 配置加载
@@ -51,19 +63,24 @@ config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.t
 try:
     with open(config_path, "rb") as f:
         config = tomllib.load(f)
-    STUDENT_ID = config["account"]["username"]
-    PASSWORD = config["account"]["password"]
+    # 环境变量优先：优先使用 SZTU_USERNAME / SZTU_PASSWORD 环境变量，
+    # 未设置时回退到 config.toml 中的值（向后兼容本地运行方式）
+    STUDENT_ID = os.getenv("SZTU_USERNAME", config["account"]["username"])
+    PASSWORD = os.getenv("SZTU_PASSWORD", config["account"]["password"])
     bk = config["booking"]
-    VENUE_ID = bk["venue_id"]
-    BLOCK_TYPE = bk["block_type"]
-    SITE_DATE_TYPE = bk["site_date_type"]
-    SESSION_TYPE = bk["session_type"]
-    TARGET_START_TIME = bk["target_start_time"]
-    POLL_INTERVAL = bk["poll_interval"]
-    RETRY_INTERVAL = bk["retry_interval"]
-    MAX_RETRIES = bk["max_retries"]
-    BOOKING_MODE = bk.get("mode", "serial")         # "serial" | "parallel"
-    CONCURRENCY = bk.get("concurrency", 5)           # 并行模式下并发请求数
+    # 所有预约参数均支持环境变量覆盖
+    #   优先级: workflow_dispatch input → 环境变量 → config.toml → 默认值
+    #   本地运行时直接编辑 config.toml；GitHub Actions 通过下拉表单选择
+    VENUE_ID        = int(os.getenv("SZTU_VENUE_ID",          bk["venue_id"]))
+    BLOCK_TYPE      = int(os.getenv("SZTU_BLOCK_TYPE",        bk["block_type"]))
+    SITE_DATE_TYPE  = int(os.getenv("SZTU_SITE_DATE_TYPE",     bk["site_date_type"]))
+    SESSION_TYPE    = int(os.getenv("SZTU_SESSION_TYPE",       bk["session_type"]))
+    TARGET_START_TIME = os.getenv("SZTU_TARGET_START_TIME",    bk["target_start_time"])
+    POLL_INTERVAL   = float(os.getenv("SZTU_POLL_INTERVAL",    bk["poll_interval"]))
+    RETRY_INTERVAL  = float(os.getenv("SZTU_RETRY_INTERVAL",   bk["retry_interval"]))
+    MAX_RETRIES     = int(os.getenv("SZTU_MAX_RETRIES",        bk["max_retries"]))
+    BOOKING_MODE    = os.getenv("SZTU_MODE",                   bk.get("mode", "serial"))
+    CONCURRENCY     = int(os.getenv("SZTU_CONCURRENCY",        bk.get("concurrency", 5)))
 except FileNotFoundError:
     print(f"❌ 找不到配置文件 {config_path}")
     print(CONFIG_HELP)
@@ -101,33 +118,28 @@ BASE_HEADERS = {
 }
 
 
-def log(msg: str) -> None:
-    """带时间戳的日志输出"""
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
-
-
 def fetch_token() -> str:
     """获取 JWT 令牌，失败时自动重试"""
     max_attempts = 3
     for attempt in range(1, max_attempts + 1):
         try:
-            log("正在获取认证令牌...")
+            logging.info("正在获取认证令牌...")
             token = get_gym_token(STUDENT_ID, PASSWORD)
-            log("✅ 认证令牌获取成功")
+            logging.info("✅ 认证令牌获取成功")
             return token
         except GymAuthError as e:
-            log(f"❌ 认证失败 (第{attempt}次): {e}")
+            logging.info(f"❌ 认证失败 (第{attempt}次): {e}")
             if attempt == max_attempts:
                 raise
             wait = 2 ** attempt
-            log(f"   {wait} 秒后重试...")
+            logging.info(f"   {wait} 秒后重试...")
             time.sleep(wait)
         except requests.RequestException as e:
-            log(f"❌ 网络错误 (第{attempt}次): {e}")
+            logging.info(f"❌ 网络错误 (第{attempt}次): {e}")
             if attempt == max_attempts:
                 raise
             wait = 5
-            log(f"   {wait} 秒后重试...")
+            logging.info(f"   {wait} 秒后重试...")
             time.sleep(wait)
 
 
@@ -160,7 +172,7 @@ def get_session() -> requests.Session:
 def refresh_token() -> None:
     """刷新令牌并更新全局 session"""
     global _session, _current_token
-    log("🔄 令牌已过期，正在刷新...")
+    logging.info("🔄 令牌已过期，正在刷新...")
     _current_token = fetch_token()
     _session = build_session(_current_token)
 
@@ -193,7 +205,7 @@ def get_target_session_id() -> int | None:
     for date_str, sessions in data.get("data", {}).items():
         for s in sessions:
             if s.get("startTime") == TARGET_START_TIME:
-                log(
+                logging.info(
                     f"✓ 锁定目标场次 | id={s['id']} date={date_str} "
                     f"{s['startTime']}-{s['endTime']} "
                     f"stock={s.get('stock', '-')} venue={s.get('venueSiteName', '-')}"
@@ -224,17 +236,17 @@ def create_order(site_session_id: int) -> str | None:
     code = data.get("code")
 
     if code == "TicketsSoldOut":
-        log(f"票已售罄 (status={data.get('status')})，继续轮询...")
+        logging.info(f"票已售罄 (status={data.get('status')})，继续轮询...")
         return None
     # elif code == "PleaseDoNotPlaceDuplicateOrders":
-    #     log("订单已存在，请勿重复下单")
+    #     logging.info("订单已存在，请勿重复下单")
     #     return None
 
     if code != "Success" or not data.get("success"):
         raise RuntimeError(f"create 请求失败: {data}")
 
     order_no = data["data"]["orderNo"]
-    log(f"✓ 订单创建成功 | orderNo={order_no}")
+    logging.info(f"✓ 订单创建成功 | orderNo={order_no}")
     return order_no
 
 
@@ -272,15 +284,15 @@ def parallel_create_orders(site_session_id: int, concurrency: int = 5) -> str | 
             code = data.get("code")
 
             if code == "TicketsSoldOut":
-                log(f"  [并行 worker] 票已售罄")
+                logging.info(f"  [并行 worker] 票已售罄")
                 return None
 
             if code == "PleaseDoNotPlaceDuplicateOrders":
-                log(f"  [并行 worker] 重复下单 (已有订单)")
+                logging.info(f"  [并行 worker] 重复下单 (已有订单)")
                 return None
 
             if code == "SystemError":
-                log(f"  [并行 worker] 系统繁忙: {data.get('msg', '')}")
+                logging.info(f"  [并行 worker] 系统繁忙: {data.get('msg', '')}")
                 return None
 
             if code != "Success" or not data.get("success"):
@@ -288,7 +300,7 @@ def parallel_create_orders(site_session_id: int, concurrency: int = 5) -> str | 
 
             return data["data"]["orderNo"]
         except Exception as e:
-            log(f"✗ [并行 worker] {e}")
+            logging.info(f"✗ [并行 worker] {e}")
             return None
 
     sessions = [_create_session_with_token(token) for _ in range(concurrency)]
@@ -298,11 +310,11 @@ def parallel_create_orders(site_session_id: int, concurrency: int = 5) -> str | 
         for future in as_completed(futures):
             order_no = future.result()
             if order_no:
-                log(f"✓ 订单创建成功 | orderNo={order_no}")
+                logging.info(f"✓ 订单创建成功 | orderNo={order_no}")
                 return order_no
 
     # 全部返回 None → 售罄
-    log("票已售罄，继续轮询...")
+    logging.info("票已售罄，继续轮询...")
     return None
 
 
@@ -326,7 +338,7 @@ def pay_order(order_no: str) -> bool:
     if data.get("code") != "Success" or not data.get("success"):
         raise RuntimeError(f"pay 请求失败: {data}")
 
-    log(f"✓ 支付成功 | orderNo={order_no}")
+    logging.info(f"✓ 支付成功 | orderNo={order_no}")
     return True
 
 
@@ -373,22 +385,22 @@ def _api_post(url: str, payload: dict) -> requests.Response:
 # ============================================================
 
 def serial_main() -> None:
-    log("══════════════════════════════════════")
-    log("体育馆自动订票脚本启动 [串行模式]")
-    log(f"目标时段: {TARGET_START_TIME} | 场馆ID: {VENUE_ID}")
-    log(f"日期类型: {SITE_DATE_TYPE} (1=今天 2=明天)")
-    log(f"轮询间隔: {POLL_INTERVAL}s | 重试间隔: {RETRY_INTERVAL}s")
-    log("══════════════════════════════════════")
+    logging.info("══════════════════════════════════════")
+    logging.info("体育馆自动订票脚本启动 [串行模式]")
+    logging.info(f"目标时段: {TARGET_START_TIME} | 场馆ID: {VENUE_ID}")
+    logging.info(f"日期类型: {SITE_DATE_TYPE} (1=今天 2=明天)")
+    logging.info(f"轮询间隔: {POLL_INTERVAL}s | 重试间隔: {RETRY_INTERVAL}s")
+    logging.info("══════════════════════════════════════")
 
     # Step 1: 获取目标场次 id（仅一次）
     try:
         site_session_id = get_target_session_id()
     except Exception as e:
-        log(f"✗ sessionlist 请求异常: {e}")
+        logging.info(f"✗ sessionlist 请求异常: {e}")
         sys.exit(1)
 
     if site_session_id is None:
-        log(f"✗ 未找到目标时段 {TARGET_START_TIME} 的场次，请检查 SITE_DATE_TYPE 配置")
+        logging.info(f"✗ 未找到目标时段 {TARGET_START_TIME} 的场次，请检查 SITE_DATE_TYPE 配置")
         sys.exit(1)
 
     # Step 2: 轮询创建订单（由 create 接口判断是否售罄）
@@ -397,15 +409,15 @@ def serial_main() -> None:
         attempt += 1
 
         if MAX_RETRIES > 0 and attempt > MAX_RETRIES:
-            log(f"已达最大重试次数 {MAX_RETRIES}，退出")
+            logging.info(f"已达最大重试次数 {MAX_RETRIES}，退出")
             sys.exit(1)
 
-        log(f"--- 第 {attempt} 轮 ---")
+        logging.info(f"--- 第 {attempt} 轮 ---")
 
         try:
             order_no = create_order(site_session_id)
         except Exception as e:
-            log(f"✗ create 异常: {e}")
+            logging.info(f"✗ create 异常: {e}")
             time.sleep(RETRY_INTERVAL)
             continue
 
@@ -418,12 +430,12 @@ def serial_main() -> None:
         time.sleep(0.2)
         try:
             pay_order(order_no)
-            log("══════════════════════════════════════")
-            log("🎉 订票成功！")
-            log("══════════════════════════════════════")
-            break
+            logging.info("══════════════════════════════════════")
+            logging.info("🎉 订票成功！")
+            logging.info("══════════════════════════════════════")
+            sys.exit(0)
         except Exception as e:
-            log(f"✗ pay 异常: {e}（订单 {order_no} 已创建但支付失败，请检查）")
+            logging.info(f"✗ pay 异常: {e}（订单 {order_no} 已创建但支付失败，请检查）")
             time.sleep(RETRY_INTERVAL)
             continue
 
@@ -433,22 +445,22 @@ def serial_main() -> None:
 # ============================================================
 
 def parallel_main() -> None:
-    log("══════════════════════════════════════")
-    log("体育馆自动订票脚本启动 [并行模式]")
-    log(f"目标时段: {TARGET_START_TIME} | 场馆ID: {VENUE_ID}")
-    log(f"日期类型: {SITE_DATE_TYPE} (1=今天 2=明天)")
-    log(f"并发数: {CONCURRENCY} | 轮询间隔: {POLL_INTERVAL}s")
-    log("══════════════════════════════════════")
+    logging.info("══════════════════════════════════════")
+    logging.info("体育馆自动订票脚本启动 [并行模式]")
+    logging.info(f"目标时段: {TARGET_START_TIME} | 场馆ID: {VENUE_ID}")
+    logging.info(f"日期类型: {SITE_DATE_TYPE} (1=今天 2=明天)")
+    logging.info(f"并发数: {CONCURRENCY} | 轮询间隔: {POLL_INTERVAL}s")
+    logging.info("══════════════════════════════════════")
 
     # Step 1: 获取目标场次 id（仅一次）
     try:
         site_session_id = get_target_session_id()
     except Exception as e:
-        log(f"✗ sessionlist 请求异常: {e}")
+        logging.info(f"✗ sessionlist 请求异常: {e}")
         sys.exit(1)
 
     if site_session_id is None:
-        log(f"✗ 未找到目标时段 {TARGET_START_TIME} 的场次，请检查 SITE_DATE_TYPE 配置")
+        logging.info(f"✗ 未找到目标时段 {TARGET_START_TIME} 的场次，请检查 SITE_DATE_TYPE 配置")
         sys.exit(1)
 
     # Step 2: 并行轮询创建订单
@@ -457,15 +469,15 @@ def parallel_main() -> None:
         attempt += 1
 
         if MAX_RETRIES > 0 and attempt > MAX_RETRIES:
-            log(f"已达最大重试次数 {MAX_RETRIES}，退出")
+            logging.info(f"已达最大重试次数 {MAX_RETRIES}，退出")
             sys.exit(1)
 
-        log(f"--- 第 {attempt} 轮 (并行 {CONCURRENCY} 路) ---")
+        logging.info(f"--- 第 {attempt} 轮 (并行 {CONCURRENCY} 路) ---")
 
         try:
             order_no = parallel_create_orders(site_session_id, CONCURRENCY)
         except Exception as e:
-            log(f"✗ parallel create 异常: {e}")
+            logging.info(f"✗ parallel create 异常: {e}")
             time.sleep(RETRY_INTERVAL)
             continue
 
@@ -477,12 +489,12 @@ def parallel_main() -> None:
         time.sleep(0.2)
         try:
             pay_order(order_no)
-            log("══════════════════════════════════════")
-            log("🎉 订票成功！")
-            log("══════════════════════════════════════")
-            break
+            logging.info("══════════════════════════════════════")
+            logging.info("🎉 订票成功！")
+            logging.info("══════════════════════════════════════")
+            sys.exit(0)
         except Exception as e:
-            log(f"✗ pay 异常: {e}（订单 {order_no} 已创建但支付失败，请检查）")
+            logging.info(f"✗ pay 异常: {e}（订单 {order_no} 已创建但支付失败，请检查）")
             time.sleep(RETRY_INTERVAL)
             continue
 

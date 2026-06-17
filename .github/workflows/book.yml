@@ -1,0 +1,96 @@
+name: SZTU Gym Booker
+
+on:
+  workflow_dispatch:
+    inputs:
+      venue_id:
+        description: '场馆'
+        required: true
+        type: choice
+        default: '4'
+        options:
+          - { label: '游泳馆', value: '1' }
+          - { label: '乒乓球', value: '2' }
+          - { label: '羽毛球', value: '3' }
+          - { label: '健身房', value: '4' }
+          - { label: '足球场', value: '5' }
+          - { label: '综合馆', value: '41' }
+          - { label: '网球',   value: '42' }
+          - { label: '体能中心', value: '46' }
+          - { label: '匹克球', value: '47' }
+      site_date_type:
+        description: '日期'
+        required: true
+        type: choice
+        default: '2'
+        options:
+          - { label: '今天', value: '1' }
+          - { label: '明天', value: '2' }
+      target_start_time:
+        description: '目标时段'
+        required: true
+        type: choice
+        default: '17:30:00'
+        options:
+          - '08:30:00'
+          - '10:15:00'
+          - '14:00:00'
+          - '16:00:00'
+          - '17:30:00'
+          - '19:00:00'
+          - '20:20:00'
+      mode:
+        description: '抢票模式'
+        required: true
+        type: choice
+        default: 'parallel'
+        options:
+          - { label: '串行 (每轮 1 个请求)', value: 'serial' }
+          - { label: '并行 (每轮 N 个请求)', value: 'parallel' }
+      concurrency:
+        description: '并发数（仅并行模式生效）'
+        type: number
+        default: 5
+      max_retries:
+        description: '最大重试次数'
+        type: number
+        default: 180
+
+  schedule:
+    # 每天北京时间 17:58 (UTC+8) 自动执行
+    # GitHub Actions 使用 UTC 时区: 09:58 UTC = 17:58 北京时间
+    - cron: '58 9 * * *'
+
+jobs:
+  book:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Prepare config
+        # config.toml is gitignored; copy from example (credentials come from Secrets,
+        # booking params are overridden by workflow inputs below)
+        run: cp config.example.toml config.toml
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run SZTU Gym Booker
+        env:
+          SZTU_USERNAME: ${{ secrets.SZTU_USERNAME }}
+          SZTU_PASSWORD: ${{ secrets.SZTU_PASSWORD }}
+          # workflow_dispatch inputs → 环境变量（schedule 触发时为空，回退到 config.toml）
+          SZTU_VENUE_ID: ${{ inputs.venue_id }}
+          SZTU_SITE_DATE_TYPE: ${{ inputs.site_date_type }}
+          SZTU_TARGET_START_TIME: ${{ inputs.target_start_time }}
+          SZTU_MODE: ${{ inputs.mode }}
+          SZTU_CONCURRENCY: ${{ inputs.concurrency }}
+          SZTU_MAX_RETRIES: ${{ inputs.max_retries }}
+        run: python SZTUGymBooker.py

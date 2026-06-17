@@ -16,7 +16,10 @@ python3 SZTUGymBooker.py
 
 ## 配置
 
-所有配置集中在 `config.toml`，无需修改代码：
+所有配置集中在 `config.toml`，无需修改代码。
+
+> **账号密码优先级**：环境变量 `SZTU_USERNAME` / `SZTU_PASSWORD` > `config.toml`。
+> 本地运行时可直接编辑 `config.toml`；GitHub Actions 自动注入环境变量，无需将密码写入仓库。
 
 ```toml
 [account]
@@ -109,3 +112,45 @@ sessionlist ──→ 获取目标场次 id（仅一次）
 - Token 过期后脚本自动刷新，无需手动干预
 - 订票成功后脚本自动停止
 - Python 3.11+（如需 Python 3.10，`pip install tomli`）
+
+## GitHub Actions 自动预约
+
+通过 GitHub Actions 实现每天定时自动执行，无需本地保持运行。
+
+### 配置 Secrets
+
+1. 进入仓库页面：**Settings → Secrets and variables → Actions**
+2. 点击 **New repository secret**，新增以下两个 Secrets：
+
+| Name | Value |
+| ---- | ----- |
+| `SZTU_USERNAME` | 你的学号 |
+| `SZTU_PASSWORD` | 统一身份认证密码 |
+
+> 脚本会自动优先使用 Secrets 中的环境变量，本地运行时仍从 `config.toml` 读取。
+
+### 手动运行
+
+1. 进入 **Actions** 页面
+2. 左侧选择 **SZTU Gym Booker**
+3. 点击 **Run workflow** → **Run workflow**
+
+### 自动运行
+
+每天 **北京时间 17:58** 自动执行（对应 UTC 09:58），在放票前 2 分钟开始抢票。
+
+### 查看日志
+
+1. 进入 Actions 页面，点击具体运行记录
+2. 展开 **Run SZTU Gym Booker** 步骤查看详细日志
+3. 成功时显示 ✓ 绿色标记，失败时显示 ✗ 红色标记
+
+### 常见问题
+
+| 问题 | 排查方向 |
+| ---- | -------- |
+| Workflow 未触发 | 检查 Actions 是否被启用（Settings → Actions → Allow all actions） |
+| 认证失败 | 确认 Secrets 中学号密码正确，无多余空格 |
+| 未找到目标时段 | 检查 `config.toml` 中 `site_date_type` 和 `target_start_time` 配置 |
+| 票已售罄 | 正常现象，脚本会持续轮询直到达到 `max_retries` 上限 |
+| Python 版本错误 | 确保 workflow 使用 `python-version: '3.11'` |

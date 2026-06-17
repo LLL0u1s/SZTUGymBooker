@@ -1,4 +1,6 @@
 config.toml
+config.local.toml
+.env
 .claude
 __pycache__
 *.har
