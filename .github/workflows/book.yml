@@ -63,6 +63,10 @@ on:
 
 jobs:
   book:
+    # schedule 触发时正常运行；手动触发时仅允许仓库所有者执行
+    # 防止陌生人随意触发你的 workflow（虽然 Secrets 不会泄露给非所有者）
+    if: |
+      github.event_name == 'schedule' || github.actor == github.repository_owner
     runs-on: ubuntu-latest
 
     steps:

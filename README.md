@@ -117,23 +117,20 @@ sessionlist ──→ 获取目标场次 id（仅一次）
 
 通过 GitHub Actions 实现每天定时自动执行，无需本地保持运行。
 
-### 配置 Secrets
+> **Fork 后开箱即用**：Workflow 已配置仅在仓库所有者自己的仓库中运行。
+> Fork 后不会被上游的 Secrets 干扰，也不会用上游账号执行。
 
-1. 进入仓库页面：**Settings → Secrets and variables → Actions**
-2. 点击 **New repository secret**，新增以下两个 Secrets：
+### 使用步骤（同学）
 
-| Name | Value |
-| ---- | ----- |
-| `SZTU_USERNAME` | 你的学号 |
-| `SZTU_PASSWORD` | 统一身份认证密码 |
+1. **Fork** 本仓库
+2. 进入你的 Fork 仓库：**Settings → Secrets and variables → Actions**，新增两个 Secrets：
+   - `SZTU_USERNAME`：你的学号
+   - `SZTU_PASSWORD`：统一身份认证密码
+3. **Settings → Actions → General → Allow all actions and reusable workflows**，确保 Actions 已启用
+4. 等待每天 17:58 自动执行，或手动触发测试：
+   进入 **Actions** → **SZTU Gym Booker** → **Run workflow**，选择场馆和时段后运行。
 
 > 脚本会自动优先使用 Secrets 中的环境变量，本地运行时仍从 `config.toml` 读取。
-
-### 手动运行
-
-1. 进入 **Actions** 页面
-2. 左侧选择 **SZTU Gym Booker**
-3. 点击 **Run workflow** → **Run workflow**
 
 ### 自动运行
 
