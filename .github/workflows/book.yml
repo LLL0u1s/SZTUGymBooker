@@ -9,23 +9,34 @@ on:
         type: choice
         default: '4'
         options:
-          - { label: '游泳馆', value: '1' }
-          - { label: '乒乓球', value: '2' }
-          - { label: '羽毛球', value: '3' }
-          - { label: '健身房', value: '4' }
-          - { label: '足球场', value: '5' }
-          - { label: '综合馆', value: '41' }
-          - { label: '网球',   value: '42' }
-          - { label: '体能中心', value: '46' }
-          - { label: '匹克球', value: '47' }
+          - label: '游泳馆'
+            value: '1'
+          - label: '乒乓球'
+            value: '2'
+          - label: '羽毛球'
+            value: '3'
+          - label: '健身房'
+            value: '4'
+          - label: '足球场'
+            value: '5'
+          - label: '综合馆'
+            value: '41'
+          - label: '网球'
+            value: '42'
+          - label: '体能中心'
+            value: '46'
+          - label: '匹克球'
+            value: '47'
       site_date_type:
         description: '日期'
         required: true
         type: choice
         default: '2'
         options:
-          - { label: '今天', value: '1' }
-          - { label: '明天', value: '2' }
+          - label: '今天'
+            value: '1'
+          - label: '明天'
+            value: '2'
       target_start_time:
         description: '目标时段'
         required: true
@@ -45,8 +56,10 @@ on:
         type: choice
         default: 'parallel'
         options:
-          - { label: '串行 (每轮 1 个请求)', value: 'serial' }
-          - { label: '并行 (每轮 N 个请求)', value: 'parallel' }
+          - label: '串行 (每轮 1 个请求)'
+            value: 'serial'
+          - label: '并行 (每轮 N 个请求)'
+            value: 'parallel'
       concurrency:
         description: '并发数（仅并行模式生效）'
         type: number

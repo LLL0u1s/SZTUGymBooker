@@ -60,27 +60,39 @@ except ImportError:
 
 config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.toml")
 
+def _env(key, default):
+    """读取环境变量，为空或不存在时回退到默认值。
+
+    与 os.getenv(key, default) 的关键区别：
+    os.getenv 在 key 存在但值为 "" 时返回 ""，不回退到 default。
+    当 GitHub Actions 由 schedule 触发时，inputs.* 均为空字符串，
+    必须回退到 config.toml 中的值。
+    """
+    val = os.getenv(key)
+    return val if val else default
+
+
 try:
     with open(config_path, "rb") as f:
         config = tomllib.load(f)
     # 环境变量优先：优先使用 SZTU_USERNAME / SZTU_PASSWORD 环境变量，
     # 未设置时回退到 config.toml 中的值（向后兼容本地运行方式）
-    STUDENT_ID = os.getenv("SZTU_USERNAME", config["account"]["username"])
-    PASSWORD = os.getenv("SZTU_PASSWORD", config["account"]["password"])
+    STUDENT_ID = _env("SZTU_USERNAME", config["account"]["username"])
+    PASSWORD   = _env("SZTU_PASSWORD", config["account"]["password"])
     bk = config["booking"]
     # 所有预约参数均支持环境变量覆盖
     #   优先级: workflow_dispatch input → 环境变量 → config.toml → 默认值
     #   本地运行时直接编辑 config.toml；GitHub Actions 通过下拉表单选择
-    VENUE_ID        = int(os.getenv("SZTU_VENUE_ID",          bk["venue_id"]))
-    BLOCK_TYPE      = int(os.getenv("SZTU_BLOCK_TYPE",        bk["block_type"]))
-    SITE_DATE_TYPE  = int(os.getenv("SZTU_SITE_DATE_TYPE",     bk["site_date_type"]))
-    SESSION_TYPE    = int(os.getenv("SZTU_SESSION_TYPE",       bk["session_type"]))
-    TARGET_START_TIME = os.getenv("SZTU_TARGET_START_TIME",    bk["target_start_time"])
-    POLL_INTERVAL   = float(os.getenv("SZTU_POLL_INTERVAL",    bk["poll_interval"]))
-    RETRY_INTERVAL  = float(os.getenv("SZTU_RETRY_INTERVAL",   bk["retry_interval"]))
-    MAX_RETRIES     = int(os.getenv("SZTU_MAX_RETRIES",        bk["max_retries"]))
-    BOOKING_MODE    = os.getenv("SZTU_MODE",                   bk.get("mode", "serial"))
-    CONCURRENCY     = int(os.getenv("SZTU_CONCURRENCY",        bk.get("concurrency", 5)))
+    VENUE_ID          = int(_env("SZTU_VENUE_ID",          bk["venue_id"]))
+    BLOCK_TYPE        = int(_env("SZTU_BLOCK_TYPE",        bk["block_type"]))
+    SITE_DATE_TYPE    = int(_env("SZTU_SITE_DATE_TYPE",     bk["site_date_type"]))
+    SESSION_TYPE      = int(_env("SZTU_SESSION_TYPE",       bk["session_type"]))
+    TARGET_START_TIME = _env("SZTU_TARGET_START_TIME",      bk["target_start_time"])
+    POLL_INTERVAL     = float(_env("SZTU_POLL_INTERVAL",    bk["poll_interval"]))
+    RETRY_INTERVAL    = float(_env("SZTU_RETRY_INTERVAL",   bk["retry_interval"]))
+    MAX_RETRIES       = int(_env("SZTU_MAX_RETRIES",        bk["max_retries"]))
+    BOOKING_MODE      = _env("SZTU_MODE",                   bk.get("mode", "serial"))
+    CONCURRENCY       = int(_env("SZTU_CONCURRENCY",        bk.get("concurrency", 5)))
 except FileNotFoundError:
     print(f"❌ 找不到配置文件 {config_path}")
     print(CONFIG_HELP)
