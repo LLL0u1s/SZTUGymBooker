@@ -113,41 +113,106 @@ sessionlist ──→ 获取目标场次 id（仅一次）
 - 订票成功后脚本自动停止
 - Python 3.11+（如需 Python 3.10，`pip install tomli`）
 
-## GitHub Actions 自动预约
+## ☁️ GitHub Actions 自动预约（推荐）
 
-通过 GitHub Actions 实现每天定时自动执行，无需本地保持运行。
+无需自备服务器或保持电脑开机，由 GitHub 每天定时帮你抢票。
 
-> **Fork 后开箱即用**：Workflow 已配置仅在仓库所有者自己的仓库中运行。
-> Fork 后不会被上游的 Secrets 干扰，也不会用上游账号执行。
+### 原理
 
-### 使用步骤（同学）
+```text
+每天 17:58 (北京时间)  GitHub 自动触发
+        │
+        ▼
+  启动 Ubuntu 虚拟机  →  安装 Python 依赖  →  运行订票脚本
+        │
+        ▼
+  ✅ 成功 / ❌ 失败  →  日志可在 Actions 页面查看
+```
 
-1. **Fork** 本仓库
-2. 进入你的 Fork 仓库：**Settings → Secrets and variables → Actions**，新增两个 Secrets：
-   - `SZTU_USERNAME`：你的学号
-   - `SZTU_PASSWORD`：统一身份认证密码
-3. **Settings → Actions → General → Allow all actions and reusable workflows**，确保 Actions 已启用
-4. 等待每天 17:58 自动执行，或手动触发测试：
-   进入 **Actions** → **SZTU Gym Booker** → **Run workflow**，选择场馆和时段后运行。
+> **安全性**：GitHub Secrets 不会传递给 Fork 仓库。每个同学使用自己的学号密码，互不干扰。
+> Workflow 已配置 `if: github.actor == github.repository_owner`，仅仓库所有者可手动触发。
 
-> 脚本会自动优先使用 Secrets 中的环境变量，本地运行时仍从 `config.toml` 读取。
+---
 
-### 自动运行
+### 🚀 快速上手（3 步）
 
-每天 **北京时间 17:58** 自动执行（对应 UTC 09:58），在放票前 2 分钟开始抢票。
+#### 第 1 步：Fork 本仓库
 
-### 查看日志
+点击右上角 **Fork** 按钮，将仓库复制到你的 GitHub 账号下。
 
-1. 进入 Actions 页面，点击具体运行记录
-2. 展开 **Run SZTU Gym Booker** 步骤查看详细日志
-3. 成功时显示 ✓ 绿色标记，失败时显示 ✗ 红色标记
+#### 第 2 步：配置 Secrets
 
-### 常见问题
+在你 Fork 的仓库中：
 
-| 问题 | 排查方向 |
-| ---- | -------- |
-| Workflow 未触发 | 检查 Actions 是否被启用（Settings → Actions → Allow all actions） |
-| 认证失败 | 确认 Secrets 中学号密码正确，无多余空格 |
-| 未找到目标时段 | 检查 `config.toml` 中 `site_date_type` 和 `target_start_time` 配置 |
-| 票已售罄 | 正常现象，脚本会持续轮询直到达到 `max_retries` 上限 |
-| Python 版本错误 | 确保 workflow 使用 `python-version: '3.11'` |
+1. 进入 **Settings** → **Secrets and variables** → **Actions**
+2. 点击 **New repository secret**，依次添加：
+
+| Name | Secret | 说明 |
+| ---- | ------ | ---- |
+| `SZTU_USERNAME` | 你的学号 | 如 `202412345678` |
+| `SZTU_PASSWORD` | 统一身份认证密码 | 登录 `auth.sztu.edu.cn` 的密码 |
+
+> ⚠️ **注意**：密码不要有多余空格或换行，直接粘贴即可。
+
+添加完成后，Secrets 页面应显示两项：
+
+```text
+SZTU_USERNAME  ***
+SZTU_PASSWORD  ***
+```
+
+#### 第 3 步：启用 Actions
+
+1. 进入 **Settings** → **Actions** → **General**
+2. 选择 **Allow all actions and reusable workflows**
+3. 点击 **Save**
+
+---
+
+### 🧪 手动测试（验证配置是否正确）
+
+1. 进入 **Actions** → **SZTU Gym Booker**
+2. 点击 **Run workflow** ▼
+3. 在表单中选择场馆和时段，点击 **Run workflow**
+4. 等待运行完成，点击进入查看日志
+
+表单选项：
+
+| 参数 | 说明 | 可选值 |
+| ---- | ---- | ------ |
+| 场馆 | 要预约的场馆 | 游泳馆 / 乒乓球 / 羽毛球 / 健身房 / 足球场 / 综合馆 / 网球 / 体能中心 / 匹克球 |
+| 日期 | 预约哪天的场次 | 今天 / 明天 |
+| 目标时段 | 想抢的时段 | 08:30 / 10:15 / 14:00 / 16:00 / 17:30 / 19:00 / 20:20 |
+| 抢票模式 | 串行/并行 | 串行 (保守) / 并行 (激进) |
+| 并发数 | 并行模式同时发送的请求数 | 默认 5 |
+| 最大重试 | 抢不到时的重试轮数 | 默认 180 |
+
+---
+
+### ⏰ 定时运行
+
+每天 **北京时间 17:58**（放票前 2 分钟）自动执行，无需手动操作。
+
+> 想改时间？编辑 `.github/workflows/book.yml` 中的 `cron` 字段。
+> GitHub 使用 UTC 时区，`58 9 * * *` = 北京时间 17:58。
+
+---
+
+### 🔍 查看日志
+
+1. 进入 **Actions** → 点击某次运行记录
+2. 展开 **Run SZTU Gym Booker** 步骤
+3. 绿色 ✓ = 订票成功，红色 ✗ = 失败（展开查看原因）
+
+---
+
+### ❓ 常见问题
+
+| 问题 | 原因 | 解决办法 |
+| ---- | ---- | -------- |
+| Workflow 不执行 | Actions 未启用 | Settings → Actions → Allow all actions |
+| 认证失败 | Secrets 中学号或密码错误 | 检查 Secrets 值，确认无空格和换行 |
+| 未找到目标时段 | 日期/时段配置不匹配 | 手动运行时检查表单选择；定时运行时编辑 `config.example.toml` |
+| 票已售罄 | 该时段已无余票 | 正常现象，脚本会持续重试直到上限 |
+| Fork 后 Actions 不触发 | Fork 默认禁用 Actions | Settings → Actions → Allow all actions |
+| 定时任务不运行 | 仓库 60 天无活动被休眠 | 每月手动触发一次即可保持活跃 |
