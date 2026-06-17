@@ -62,12 +62,12 @@ on:
             value: 'parallel'
       concurrency:
         description: '并发数（仅并行模式生效）'
-        type: number
-        default: 5
+        type: string
+        default: '5'
       max_retries:
         description: '最大重试次数'
-        type: number
-        default: 180
+        type: string
+        default: '180'
 
   schedule:
     # 每天北京时间 17:58 (UTC+8) 自动执行

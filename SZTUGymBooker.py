@@ -79,13 +79,41 @@ def _env(key, default):
     # {label, value} 作为字符串传入，而非仅取 value 字段。
     # 匹配 Ruby hash (=>) / JSON (:) / TOML-like (=) 中的 value 键
     if isinstance(val, str) and val.strip().startswith("{"):
-        m = re.search(r"""["']?value["']?\s*[=:>]+\s*["'](\d+)["']""", val)
+        m = re.search(
+            r"""["']?value["']?\s*[=:>]+\s*["'](\d+\.?\d*)["']""", val
+        )
         if m:
             logging.warning(
                 "⚠ %s 传入对象而非纯值，已自动提取 value=%s", key, m.group(1)
             )
             return m.group(1)
     return val
+
+
+def to_int(v):
+    """安全转换为整数，兼容 GitHub Web / Mobile App 的各种输入格式。
+
+    GitHub Web 端 workflow_dispatch 的 number 输入 →  "180"
+    GitHub Mobile App 同参数                  →  "180.0"
+    choice option 被整体序列化                →  {"value": "41"}
+    config.toml 中的整数                      →  4
+
+    统一用 float(str(v)) 桥接，再转 int，覆盖以上所有情况。
+    """
+    if isinstance(v, dict):
+        v = v.get("value", v)
+    if v is None:
+        raise ValueError("Cannot convert None to int")
+    return int(float(str(v).strip()))
+
+
+def to_float(v):
+    """安全转换为浮点数，兼容多种输入格式（同上）。"""
+    if isinstance(v, dict):
+        v = v.get("value", v)
+    if v is None:
+        raise ValueError("Cannot convert None to float")
+    return float(str(v).strip())
 
 
 try:
@@ -99,16 +127,20 @@ try:
     # 所有预约参数均支持环境变量覆盖
     #   优先级: workflow_dispatch input → 环境变量 → config.toml → 默认值
     #   本地运行时直接编辑 config.toml；GitHub Actions 通过下拉表单选择
-    VENUE_ID          = int(_env("SZTU_VENUE_ID",          bk["venue_id"]))
-    BLOCK_TYPE        = int(_env("SZTU_BLOCK_TYPE",        bk["block_type"]))
-    SITE_DATE_TYPE    = int(_env("SZTU_SITE_DATE_TYPE",     bk["site_date_type"]))
-    SESSION_TYPE      = int(_env("SZTU_SESSION_TYPE",       bk["session_type"]))
-    TARGET_START_TIME = _env("SZTU_TARGET_START_TIME",      bk["target_start_time"])
-    POLL_INTERVAL     = float(_env("SZTU_POLL_INTERVAL",    bk["poll_interval"]))
-    RETRY_INTERVAL    = float(_env("SZTU_RETRY_INTERVAL",   bk["retry_interval"]))
-    MAX_RETRIES       = int(_env("SZTU_MAX_RETRIES",        bk["max_retries"]))
-    BOOKING_MODE      = _env("SZTU_MODE",                   bk.get("mode", "serial"))
-    CONCURRENCY       = int(_env("SZTU_CONCURRENCY",        bk.get("concurrency", 5)))
+    VENUE_ID          = to_int(_env("SZTU_VENUE_ID",          bk["venue_id"]))
+    BLOCK_TYPE        = to_int(_env("SZTU_BLOCK_TYPE",        bk["block_type"]))
+    SITE_DATE_TYPE    = to_int(_env("SZTU_SITE_DATE_TYPE",     bk["site_date_type"]))
+    SESSION_TYPE      = to_int(_env("SZTU_SESSION_TYPE",       bk["session_type"]))
+    TARGET_START_TIME = _env("SZTU_TARGET_START_TIME",         bk["target_start_time"])
+    POLL_INTERVAL     = to_float(_env("SZTU_POLL_INTERVAL",   bk["poll_interval"]))
+    RETRY_INTERVAL    = to_float(_env("SZTU_RETRY_INTERVAL",  bk["retry_interval"]))
+    MAX_RETRIES       = to_int(_env("SZTU_MAX_RETRIES",       bk["max_retries"]))
+    BOOKING_MODE      = _env("SZTU_MODE",                      bk.get("mode", "serial"))
+    CONCURRENCY       = to_int(_env("SZTU_CONCURRENCY",       bk.get("concurrency", 5)))
+
+    # 调试日志：输出最终生效的配置（密码脱敏）
+    logging.info("最终配置: venue=%s date_type=%s time=%s mode=%s concurrency=%s max_retries=%s",
+                 VENUE_ID, SITE_DATE_TYPE, TARGET_START_TIME, BOOKING_MODE, CONCURRENCY, MAX_RETRIES)
 except FileNotFoundError:
     print(f"❌ 找不到配置文件 {config_path}")
     print(CONFIG_HELP)
