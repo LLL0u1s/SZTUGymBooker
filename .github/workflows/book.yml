@@ -69,17 +69,11 @@ on:
         type: string
         default: '180'
 
-  schedule:
-    # 每天北京时间 17:58 (UTC+8) 自动执行
-    # GitHub Actions 使用 UTC 时区: 09:58 UTC = 17:58 北京时间
-    - cron: '58 9 * * *'
-
 jobs:
   book:
-    # schedule 触发时正常运行；手动触发时仅允许仓库所有者执行
-    # 防止陌生人随意触发你的 workflow（虽然 Secrets 不会泄露给非所有者）
+    # 仅允许仓库所有者手动触发，防止陌生人随意执行
     if: |
-      github.event_name == 'schedule' || github.actor == github.repository_owner
+      github.actor == github.repository_owner
     runs-on: ubuntu-latest
 
     steps:
@@ -103,7 +97,7 @@ jobs:
         env:
           SZTU_USERNAME: ${{ secrets.SZTU_USERNAME }}
           SZTU_PASSWORD: ${{ secrets.SZTU_PASSWORD }}
-          # workflow_dispatch inputs → 环境变量（schedule 触发时为空，回退到 config.toml）
+          # workflow_dispatch inputs → 环境变量
           SZTU_VENUE_ID: ${{ inputs.venue_id }}
           SZTU_SITE_DATE_TYPE: ${{ inputs.site_date_type }}
           SZTU_TARGET_START_TIME: ${{ inputs.target_start_time }}
