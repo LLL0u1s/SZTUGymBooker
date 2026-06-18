@@ -52,6 +52,8 @@
 2. 在 Telegram 找 **@userinfobot** 获取你的 Chat ID
 3. 将 `TG_BOT_TOKEN` 和 `TG_CHAT_ID` 添加到仓库 Secrets
 
+> ℹ️ Telegram API 在国内无法直连，本地运行时需开启 Mihomo 代理（默认 `127.0.0.1:7893`）。通知请求会自动走代理，不影响抢票接口（直连国内服务器）。
+
 未配置则不会发送通知，不影响抢票功能。
 
 ### 常见问题

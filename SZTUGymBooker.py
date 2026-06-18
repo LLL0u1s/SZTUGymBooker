@@ -178,7 +178,15 @@ def send_telegram_message(text: str) -> None:
         "parse_mode": "HTML",
     }
     try:
-        resp = requests.post(url, json=payload, timeout=10)
+        resp = requests.post(
+            url,
+            json=payload,
+            timeout=10,
+            proxies={
+                "http": "http://127.0.0.1:7893",
+                "https": "http://127.0.0.1:7893",
+            },
+        )
         if resp.ok:
             logging.info("📩 Telegram 通知已发送")
         else:
