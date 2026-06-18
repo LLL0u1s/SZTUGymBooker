@@ -11,7 +11,7 @@ password = "123456"
 [booking]
 venue_id = 4            # 场馆: 1=游泳馆 2=乒乓球 3=羽毛球 4=健身房 5=足球场 41=综合馆 42=网球 46=体能中心 47=匹克球
 block_type = 1          # 区块类型
-site_date_type = 1      # 日期: 1=今天 2=明天
+site_date_type = 2      # 日期: 1=今天 2=明天
 session_type = 0        # 场次: 0=全部 1=上午 2=下午 3=晚上
 target_start_time = "17:30:00"  # 目标时段 (HH:MM:SS)
 

@@ -92,9 +92,9 @@ jobs:
           python-version: '3.11'
 
       - name: Prepare config
-        # config.toml is gitignored; copy from example (credentials come from Secrets,
-        # booking params are overridden by workflow inputs below)
-        run: cp config.example.toml config.toml
+        # config.toml is gitignored; copy from example only if not present
+        # (allows users to commit their own config.toml in a fork if desired)
+        run: test -f config.toml || cp config.example.toml config.toml
 
       - name: Install dependencies
         run: pip install -r requirements.txt
