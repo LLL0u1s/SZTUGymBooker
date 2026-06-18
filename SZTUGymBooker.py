@@ -141,6 +141,11 @@ try:
     # 调试日志：输出最终生效的配置（密码脱敏）
     logging.info("最终配置: venue=%s date_type=%s time=%s mode=%s concurrency=%s max_retries=%s",
                  VENUE_ID, SITE_DATE_TYPE, TARGET_START_TIME, BOOKING_MODE, CONCURRENCY, MAX_RETRIES)
+
+    # Telegram 通知配置（可选）
+    tg = config.get("telegram", {})
+    TG_BOT_TOKEN = _env("TG_BOT_TOKEN", tg.get("bot_token", ""))
+    TG_CHAT_ID   = _env("TG_CHAT_ID",   tg.get("chat_id", ""))
 except FileNotFoundError:
     print(f"❌ 找不到配置文件 {config_path}")
     print(CONFIG_HELP)
@@ -152,6 +157,35 @@ except KeyError as e:
 except Exception as e:
     print(f"❌ 读取配置文件失败: {e}")
     sys.exit(1)
+
+# ============================================================
+# Telegram 通知（可选）
+# ============================================================
+
+def send_telegram_message(text: str) -> None:
+    """通过 Telegram Bot 发送通知消息。
+
+    需要配置 TG_BOT_TOKEN 和 TG_CHAT_ID（环境变量或 config.toml）。
+    未配置时静默跳过，不抛出异常。
+    """
+    if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        return  # 未配置，静默跳过
+
+    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TG_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=10)
+        if resp.ok:
+            logging.info("📩 Telegram 通知已发送")
+        else:
+            logging.warning("⚠ Telegram 通知发送失败: %s", resp.text[:200])
+    except Exception as e:
+        logging.warning("⚠ Telegram 通知发送异常: %s", e)
+
 
 # ============================================================
 # 认证: 从 gym_auth 获取 JWT 令牌
@@ -457,10 +491,20 @@ def serial_main() -> None:
         site_session_id = get_target_session_id()
     except Exception as e:
         logging.info(f"✗ sessionlist 请求异常: {e}")
+        send_telegram_message(
+            f"<b>❌ 订票任务异常</b>\n"
+            f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
+            f"原因: sessionlist 请求失败 — {e}"
+        )
         sys.exit(1)
 
     if site_session_id is None:
         logging.info(f"✗ 未找到目标时段 {TARGET_START_TIME} 的场次，请检查 SITE_DATE_TYPE 配置")
+        send_telegram_message(
+            f"<b>❌ 订票任务异常</b>\n"
+            f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
+            f"原因: 未找到目标时段，请检查日期配置"
+        )
         sys.exit(1)
 
     # Step 2: 轮询创建订单（由 create 接口判断是否售罄）
@@ -470,6 +514,11 @@ def serial_main() -> None:
 
         if MAX_RETRIES > 0 and attempt > MAX_RETRIES:
             logging.info(f"已达最大重试次数 {MAX_RETRIES}，退出")
+            send_telegram_message(
+                f"<b>⏰ 订票任务结束</b>\n"
+                f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
+                f"状态: 已达最大重试次数 ({MAX_RETRIES} 轮)"
+            )
             sys.exit(1)
 
         logging.info(f"--- 第 {attempt} 轮 ---")
@@ -493,6 +542,11 @@ def serial_main() -> None:
             logging.info("══════════════════════════════════════")
             logging.info("🎉 订票成功！")
             logging.info("══════════════════════════════════════")
+            send_telegram_message(
+                f"<b>🎉 订票成功！</b>\n"
+                f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
+                f"订单号: {order_no}"
+            )
             sys.exit(0)
         except Exception as e:
             logging.info(f"✗ pay 异常: {e}（订单 {order_no} 已创建但支付失败，请检查）")
@@ -517,10 +571,20 @@ def parallel_main() -> None:
         site_session_id = get_target_session_id()
     except Exception as e:
         logging.info(f"✗ sessionlist 请求异常: {e}")
+        send_telegram_message(
+            f"<b>❌ 订票任务异常</b>\n"
+            f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
+            f"原因: sessionlist 请求失败 — {e}"
+        )
         sys.exit(1)
 
     if site_session_id is None:
         logging.info(f"✗ 未找到目标时段 {TARGET_START_TIME} 的场次，请检查 SITE_DATE_TYPE 配置")
+        send_telegram_message(
+            f"<b>❌ 订票任务异常</b>\n"
+            f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
+            f"原因: 未找到目标时段，请检查日期配置"
+        )
         sys.exit(1)
 
     # Step 2: 并行轮询创建订单
@@ -530,6 +594,11 @@ def parallel_main() -> None:
 
         if MAX_RETRIES > 0 and attempt > MAX_RETRIES:
             logging.info(f"已达最大重试次数 {MAX_RETRIES}，退出")
+            send_telegram_message(
+                f"<b>⏰ 订票任务结束</b>\n"
+                f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
+                f"状态: 已达最大重试次数 ({MAX_RETRIES} 轮)"
+            )
             sys.exit(1)
 
         logging.info(f"--- 第 {attempt} 轮 (并行 {CONCURRENCY} 路) ---")
@@ -552,6 +621,11 @@ def parallel_main() -> None:
             logging.info("══════════════════════════════════════")
             logging.info("🎉 订票成功！")
             logging.info("══════════════════════════════════════")
+            send_telegram_message(
+                f"<b>🎉 订票成功！</b>\n"
+                f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
+                f"订单号: {order_no}"
+            )
             sys.exit(0)
         except Exception as e:
             logging.info(f"✗ pay 异常: {e}（订单 {order_no} 已创建但支付失败，请检查）")

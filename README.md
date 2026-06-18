@@ -22,6 +22,8 @@
 | ---- | ----- |
 | `SZTU_USERNAME` | 你的学号 |
 | `SZTU_PASSWORD` | 统一身份认证密码 |
+| `TG_BOT_TOKEN` | （可选）Telegram Bot Token，抢票结束后推送通知 |
+| `TG_CHAT_ID` | （可选）接收通知的 Chat ID |
 
 ### 第 3 步：启用 Actions
 
@@ -41,6 +43,16 @@
 | 最大重试 | 默认 180 轮 |
 
 绿色 ✓ = 成功，红色 ✗ = 失败（展开日志查看原因）。
+
+### Telegram 通知（可选）
+
+配置后可收到抢票结果的实时推送：
+
+1. 在 Telegram 找 **@BotFather** 创建 Bot，获取 Token
+2. 在 Telegram 找 **@userinfobot** 获取你的 Chat ID
+3. 将 `TG_BOT_TOKEN` 和 `TG_CHAT_ID` 添加到仓库 Secrets
+
+未配置则不会发送通知，不影响抢票功能。
 
 ### 常见问题
 
@@ -85,6 +97,10 @@ retry_interval = 1          # 失败重试间隔 (秒)
 max_retries = 100           # 最大重试次数
 mode = "serial"             # "serial"(串行) | "parallel"(并行)
 concurrency = 5             # 仅并行模式生效
+
+[telegram]
+bot_token = ""              # 可选：Telegram Bot Token
+chat_id = ""                # 可选：接收通知的 Chat ID
 ```
 
 > 环境变量 `SZTU_USERNAME` / `SZTU_PASSWORD` / `SZTU_VENUE_ID` 等优先于 `config.toml`。

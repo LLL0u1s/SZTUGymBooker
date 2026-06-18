@@ -97,6 +97,9 @@ jobs:
         env:
           SZTU_USERNAME: ${{ secrets.SZTU_USERNAME }}
           SZTU_PASSWORD: ${{ secrets.SZTU_PASSWORD }}
+          # Telegram 通知（可选，未配置则不发送）
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           # workflow_dispatch inputs → 环境变量
           SZTU_VENUE_ID: ${{ inputs.venue_id }}
           SZTU_SITE_DATE_TYPE: ${{ inputs.site_date_type }}

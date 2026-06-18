@@ -21,3 +21,8 @@ retry_interval = 1      # 失败重试间隔 (秒)
 max_retries = 100       # 最大重试次数 (0=无限)
 mode = "serial"         # 抢票模式: "serial"(串行) | "parallel"(并行)
 concurrency = 5       # 仅并行模式生效，并发请求数 (默认 5)
+
+# --- Telegram 通知（可选）---
+[telegram]
+bot_token = ""          # Telegram Bot Token（从 @BotFather 获取）
+chat_id = ""            # 接收通知的 Chat ID（私聊 / 群组 / 频道）
