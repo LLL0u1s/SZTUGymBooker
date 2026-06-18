@@ -1,5 +1,7 @@
 # SZTU GymBooker — 深圳技术大学体育馆自动订票
 
+**向"订单创建失败！"说再见！**
+
 定时轮询订票接口，目标场次一旦有票自动下单并支付。认证通过 SSO 统一身份认证自动完成，**无需手动抓包 Token**。
 
 ## 🚀 快速开始（GitHub Actions，推荐）
@@ -54,6 +56,8 @@
 
 ## 💻 本地运行
 
+如需精准的定时执行（不受 GitHub Actions 延迟影响），可在本地部署 cron 或任务计划。
+
 ```bash
 pip install -r requirements.txt
 cp config.example.toml config.toml   # 编辑填入学号密码
@@ -97,9 +101,9 @@ concurrency = 5             # 仅并行模式生效
 
 ### 工作流程
 
-```
-sessionlist → 获取目标场次 → create (轮询) → pay → 完成
 ```text
+sessionlist → 获取目标场次 → create (轮询) → pay → 完成
+```
 
 支持串行（每轮 1 请求）和并行（每轮 N 请求，`concurrency` 控制）两种模式，Token 过期自动刷新。
 
