@@ -16,6 +16,11 @@ import urllib3
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+
+class DuplicateOrderError(Exception):
+    """订单已存在（重复下单），视为抢票成功，停止轮询。"""
+
+
 # ============================================================
 # 日志配置
 # ============================================================
@@ -340,9 +345,9 @@ def create_order(site_session_id: int) -> str | None:
     if code == "TicketsSoldOut":
         logging.info(f"票已售罄 (status={data.get('status')})，继续轮询...")
         return None
-    # elif code == "PleaseDoNotPlaceDuplicateOrders":
-    #     logging.info("订单已存在，请勿重复下单")
-    #     return None
+    elif code == "PleaseDoNotPlaceDuplicateOrders":
+        logging.info("订单已存在，请勿重复下单")
+        raise DuplicateOrderError()
 
     if code != "Success" or not data.get("success"):
         raise RuntimeError(f"create 请求失败: {data}")
@@ -391,7 +396,7 @@ def parallel_create_orders(site_session_id: int, concurrency: int = 5) -> str | 
 
             if code == "PleaseDoNotPlaceDuplicateOrders":
                 logging.info(f"  [并行 worker] 重复下单 (已有订单)")
-                return None
+                raise DuplicateOrderError()
 
             if code == "SystemError":
                 logging.info(f"  [并行 worker] 系统繁忙: {data.get('msg', '')}")
@@ -401,6 +406,8 @@ def parallel_create_orders(site_session_id: int, concurrency: int = 5) -> str | 
                 raise RuntimeError(f"create 请求失败: {data}")
 
             return data["data"]["orderNo"]
+        except DuplicateOrderError:
+            raise
         except Exception as e:
             logging.info(f"✗ [并行 worker] {e}")
             return None
@@ -410,7 +417,11 @@ def parallel_create_orders(site_session_id: int, concurrency: int = 5) -> str | 
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         futures = [executor.submit(worker, s) for s in sessions]
         for future in as_completed(futures):
-            order_no = future.result()
+            try:
+                order_no = future.result()
+            except DuplicateOrderError:
+                logging.info("订单已存在，请勿重复下单")
+                raise
             if order_no:
                 logging.info(f"✓ 订单创建成功 | orderNo={order_no}")
                 return order_no
@@ -533,6 +544,16 @@ def serial_main() -> None:
 
         try:
             order_no = create_order(site_session_id)
+        except DuplicateOrderError:
+            logging.info("══════════════════════════════════════")
+            logging.info("🎉 订单已存在，无需重复下单！")
+            logging.info("══════════════════════════════════════")
+            send_telegram_message(
+                f"<b>🎉 订单已存在</b>\n"
+                f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
+                f"该场次已有订单，无需重复抢票"
+            )
+            sys.exit(0)
         except Exception as e:
             logging.info(f"✗ create 异常: {e}")
             time.sleep(RETRY_INTERVAL)
@@ -613,6 +634,16 @@ def parallel_main() -> None:
 
         try:
             order_no = parallel_create_orders(site_session_id, CONCURRENCY)
+        except DuplicateOrderError:
+            logging.info("══════════════════════════════════════")
+            logging.info("🎉 订单已存在，无需重复下单！")
+            logging.info("══════════════════════════════════════")
+            send_telegram_message(
+                f"<b>🎉 订单已存在</b>\n"
+                f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
+                f"该场次已有订单，无需重复抢票"
+            )
+            sys.exit(0)
         except Exception as e:
             logging.info(f"✗ parallel create 异常: {e}")
             time.sleep(RETRY_INTERVAL)
