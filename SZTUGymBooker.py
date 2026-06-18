@@ -510,20 +510,10 @@ def serial_main() -> None:
         site_session_id = get_target_session_id()
     except Exception as e:
         logging.info(f"✗ sessionlist 请求异常: {e}")
-        send_telegram_message(
-            f"<b>❌ 订票任务异常</b>\n"
-            f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
-            f"原因: sessionlist 请求失败 — {e}"
-        )
         sys.exit(1)
 
     if site_session_id is None:
         logging.info(f"✗ 未找到目标时段 {TARGET_START_TIME} 的场次，请检查 SITE_DATE_TYPE 配置")
-        send_telegram_message(
-            f"<b>❌ 订票任务异常</b>\n"
-            f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
-            f"原因: 未找到目标时段，请检查日期配置"
-        )
         sys.exit(1)
 
     # Step 2: 轮询创建订单（由 create 接口判断是否售罄）
@@ -533,11 +523,6 @@ def serial_main() -> None:
 
         if MAX_RETRIES > 0 and attempt > MAX_RETRIES:
             logging.info(f"已达最大重试次数 {MAX_RETRIES}，退出")
-            send_telegram_message(
-                f"<b>⏰ 订票任务结束</b>\n"
-                f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
-                f"状态: 已达最大重试次数 ({MAX_RETRIES} 轮)"
-            )
             sys.exit(1)
 
         logging.info(f"--- 第 {attempt} 轮 ---")
@@ -548,11 +533,6 @@ def serial_main() -> None:
             logging.info("══════════════════════════════════════")
             logging.info("🎉 订单已存在，无需重复下单！")
             logging.info("══════════════════════════════════════")
-            send_telegram_message(
-                f"<b>🎉 订单已存在</b>\n"
-                f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
-                f"该场次已有订单，无需重复抢票"
-            )
             sys.exit(0)
         except Exception as e:
             logging.info(f"✗ create 异常: {e}")
@@ -600,20 +580,10 @@ def parallel_main() -> None:
         site_session_id = get_target_session_id()
     except Exception as e:
         logging.info(f"✗ sessionlist 请求异常: {e}")
-        send_telegram_message(
-            f"<b>❌ 订票任务异常</b>\n"
-            f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
-            f"原因: sessionlist 请求失败 — {e}"
-        )
         sys.exit(1)
 
     if site_session_id is None:
         logging.info(f"✗ 未找到目标时段 {TARGET_START_TIME} 的场次，请检查 SITE_DATE_TYPE 配置")
-        send_telegram_message(
-            f"<b>❌ 订票任务异常</b>\n"
-            f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
-            f"原因: 未找到目标时段，请检查日期配置"
-        )
         sys.exit(1)
 
     # Step 2: 并行轮询创建订单
@@ -623,11 +593,6 @@ def parallel_main() -> None:
 
         if MAX_RETRIES > 0 and attempt > MAX_RETRIES:
             logging.info(f"已达最大重试次数 {MAX_RETRIES}，退出")
-            send_telegram_message(
-                f"<b>⏰ 订票任务结束</b>\n"
-                f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
-                f"状态: 已达最大重试次数 ({MAX_RETRIES} 轮)"
-            )
             sys.exit(1)
 
         logging.info(f"--- 第 {attempt} 轮 (并行 {CONCURRENCY} 路) ---")
@@ -638,11 +603,6 @@ def parallel_main() -> None:
             logging.info("══════════════════════════════════════")
             logging.info("🎉 订单已存在，无需重复下单！")
             logging.info("══════════════════════════════════════")
-            send_telegram_message(
-                f"<b>🎉 订单已存在</b>\n"
-                f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
-                f"该场次已有订单，无需重复抢票"
-            )
             sys.exit(0)
         except Exception as e:
             logging.info(f"✗ parallel create 异常: {e}")
