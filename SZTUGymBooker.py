@@ -151,6 +151,10 @@ try:
     tg = config.get("telegram", {})
     TG_BOT_TOKEN = _env("TG_BOT_TOKEN", tg.get("bot_token", ""))
     TG_CHAT_ID   = _env("TG_CHAT_ID",   tg.get("chat_id", ""))
+
+    # 飞书通知配置（可选）
+    fs = config.get("feishu", {})
+    FEISHU_WEBHOOK_URL = _env("FEISHU_WEBHOOK_URL", fs.get("webhook_url", ""))
 except FileNotFoundError:
     print(f"❌ 找不到配置文件 {config_path}")
     print(CONFIG_HELP)
@@ -198,6 +202,41 @@ def send_telegram_message(text: str) -> None:
             logging.warning("⚠ Telegram 通知发送失败: %s", resp.text[:200])
     except Exception as e:
         logging.warning("⚠ Telegram 通知发送异常: %s", e)
+
+
+def send_feishu_message(text: str) -> None:
+    """通过飞书机器人 Webhook 发送通知消息。
+
+    需要配置 FEISHU_WEBHOOK_URL（环境变量或 config.toml）。
+    未配置时静默跳过，不抛出异常。
+    """
+    if not FEISHU_WEBHOOK_URL:
+        return  # 未配置，静默跳过
+
+    url = FEISHU_WEBHOOK_URL
+    payload = {
+        "msg_type": "text",
+        "content": {
+            "text": text,
+        },
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=10)
+        if resp.ok:
+            logging.info("📩 飞书通知已发送")
+        else:
+            logging.warning("⚠ 飞书通知发送失败: %s", resp.text[:200])
+    except Exception as e:
+        logging.warning("⚠ 飞书通知发送异常: %s", e)
+
+
+def send_notification(text: str) -> None:
+    """统一通知入口，同时发送 Telegram 和 飞书。
+
+    各渠道未配置时静默跳过。
+    """
+    send_telegram_message(text)
+    send_feishu_message(text)
 
 
 # ============================================================
@@ -551,7 +590,7 @@ def serial_main() -> None:
             logging.info("══════════════════════════════════════")
             logging.info("🎉 订票成功！")
             logging.info("══════════════════════════════════════")
-            send_telegram_message(
+            send_notification(
                 f"<b>🎉 订票成功！</b>\n"
                 f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
                 f"订单号: {order_no}"
@@ -620,7 +659,7 @@ def parallel_main() -> None:
             logging.info("══════════════════════════════════════")
             logging.info("🎉 订票成功！")
             logging.info("══════════════════════════════════════")
-            send_telegram_message(
+            send_notification(
                 f"<b>🎉 订票成功！</b>\n"
                 f"场馆 ID: {VENUE_ID} | 时段: {TARGET_START_TIME}\n"
                 f"订单号: {order_no}"

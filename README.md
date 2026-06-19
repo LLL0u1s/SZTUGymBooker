@@ -22,8 +22,9 @@
 | ---- | ----- |
 | `SZTU_USERNAME` | 你的学号 |
 | `SZTU_PASSWORD` | 统一身份认证密码 |
-| `TG_BOT_TOKEN` | （可选）Telegram Bot Token，抢票结束后推送通知 |
+| `TG_BOT_TOKEN` | （可选）Telegram Bot Token，订票成功后推送通知 |
 | `TG_CHAT_ID` | （可选）接收通知的 Chat ID |
+| `FEISHU_WEBHOOK_URL` | （可选）飞书机器人 Webhook URL，订票成功后推送通知 |
 
 ### 第 3 步：启用 Actions
 
@@ -44,15 +45,16 @@
 
 绿色 ✓ = 成功，红色 ✗ = 失败（展开日志查看原因）。
 
-### Telegram 通知（可选）
+### 🔔 通知（可选）
 
-配置后可收到抢票结果的实时推送：
+订票成功时可通过以下渠道推送通知，可同时配置多个：
 
-1. 在 Telegram 找 **@BotFather** 创建 Bot，获取 Token
-2. 在 Telegram 找 **@userinfobot** 获取你的 Chat ID
-3. 将 `TG_BOT_TOKEN` 和 `TG_CHAT_ID` 添加到仓库 Secrets
+| 渠道 | 所需 Secret | 获取方式 |
+| ---- | ----------- | -------- |
+| Telegram | `TG_BOT_TOKEN` + `TG_CHAT_ID` | 找 **@BotFather** 创建 Bot → 找 **@userinfobot** 获取 Chat ID |
+| 飞书 | `FEISHU_WEBHOOK_URL` | 飞书群 → 设置 → 群机器人 → 添加 → Webhook 地址 |
 
-> ℹ️ Telegram API 在国内无法直连，本地运行时需开启 Mihomo 代理（默认 `127.0.0.1:7893`）。通知请求会自动走代理，不影响抢票接口（直连国内服务器）。
+> ℹ️ Telegram API 在国内无法直连，本地运行时需开启 Mihomo 代理（默认 `127.0.0.1:7893`）。通知请求会自动走代理，不影响抢票接口（直连国内服务器）。飞书走直连。
 
 未配置则不会发送通知，不影响抢票功能。
 
@@ -103,6 +105,9 @@ concurrency = 5             # 仅并行模式生效
 [telegram]
 bot_token = ""              # 可选：Telegram Bot Token
 chat_id = ""                # 可选：接收通知的 Chat ID
+
+[feishu]
+webhook_url = ""            # 可选：飞书机器人 Webhook URL
 ```
 
 > 环境变量 `SZTU_USERNAME` / `SZTU_PASSWORD` / `SZTU_VENUE_ID` 等优先于 `config.toml`。

@@ -26,3 +26,7 @@ concurrency = 5       # 仅并行模式生效，并发请求数 (默认 5)
 [telegram]
 bot_token = ""          # Telegram Bot Token（从 @BotFather 获取）
 chat_id = ""            # 接收通知的 Chat ID（私聊 / 群组 / 频道）
+
+# --- 飞书通知（可选）---
+[feishu]
+webhook_url = ""        # 飞书机器人 Webhook URL
