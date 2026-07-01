@@ -11,6 +11,9 @@ import time
 import sys
 import os
 import re
+import json
+import base64
+import hashlib
 import logging
 import urllib3
 from datetime import datetime
@@ -65,6 +68,12 @@ except ImportError:
         sys.exit(1)
 
 config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.toml")
+TOKEN_CACHE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    ".sztu_gym_token.json",
+)
+TOKEN_REFRESH_MARGIN_SECONDS = 10 * 60
+TOKEN_FALLBACK_TTL_SECONDS = 7 * 24 * 60 * 60
 
 def _env(key, default):
     """读取环境变量，为空或不存在时回退到默认值。
@@ -248,6 +257,7 @@ from gym_auth import get_gym_token, GymAuthError
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BASE_URL = "https://gym.sztu.edu.cn/mapi"
+TOKEN_VALIDATE_URL = "https://gym.sztu.edu.cn/web/user/center/info"
 
 # 基础请求头（不含 token，启动时动态填入）
 BASE_HEADERS = {
@@ -264,22 +274,144 @@ BASE_HEADERS = {
 }
 
 
+def _username_hash(username: str) -> str:
+    """对账号做不可逆摘要，避免缓存文件直接暴露学号。"""
+    return hashlib.sha256(username.encode("utf-8")).hexdigest()
+
+
+def _decode_jwt_exp(token: str) -> int | None:
+    """解析 JWT payload 中的 exp；仅用于读取过期时间，不校验签名。"""
+    parts = token.split(".")
+    if len(parts) < 2:
+        return None
+    payload = parts[1]
+    payload += "=" * (-len(payload) % 4)
+    try:
+        data = json.loads(base64.urlsafe_b64decode(payload.encode("utf-8")))
+    except Exception:
+        return None
+    exp = data.get("exp")
+    if isinstance(exp, (int, float)):
+        return int(exp)
+    return None
+
+
+def _token_expires_at(token: str, now: float | None = None) -> int:
+    exp = _decode_jwt_exp(token)
+    if exp is not None:
+        return exp
+    if now is None:
+        now = time.time()
+    return int(now + TOKEN_FALLBACK_TTL_SECONDS)
+
+
+def load_cached_token(username: str, now: float | None = None) -> str | None:
+    """读取本地 JWT 缓存；账号不匹配、损坏或即将过期时返回 None。"""
+    if now is None:
+        now = time.time()
+    try:
+        with open(TOKEN_CACHE_PATH, "r", encoding="utf-8") as f:
+            cache = json.load(f)
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        logging.warning("⚠ Token 缓存读取失败，将重新认证: %s", e)
+        return None
+
+    token = cache.get("token")
+    expires_at = cache.get("expires_at")
+    if not isinstance(token, str) or not isinstance(expires_at, (int, float)):
+        logging.warning("⚠ Token 缓存格式无效，将重新认证")
+        return None
+    if cache.get("username_hash") != _username_hash(username):
+        return None
+    if float(expires_at) - now <= TOKEN_REFRESH_MARGIN_SECONDS:
+        logging.info("Token 缓存已过期或即将过期，将重新认证")
+        return None
+    return token
+
+
+def remove_cached_token() -> None:
+    """删除已失效的本地 JWT 缓存。"""
+    try:
+        os.remove(TOKEN_CACHE_PATH)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logging.warning("⚠ Token 缓存删除失败: %s", e)
+
+
+def validate_token_with_server(token: str) -> bool:
+    """按 CheckToken.har 请求用户信息接口，确认 token 仍被服务端接受。"""
+    headers = dict(BASE_HEADERS)
+    headers["Web-X-Auth-Token"] = token
+    headers["xweb_xhr"] = "1"
+    try:
+        resp = requests.get(
+            TOKEN_VALIDATE_URL,
+            headers=headers,
+            timeout=10,
+            verify=False,
+        )
+    except requests.RequestException as e:
+        logging.warning("⚠ Token 服务端验证请求失败，将重新认证: %s", e)
+        return False
+
+    if _needs_token_refresh(resp):
+        return False
+
+    try:
+        data = resp.json()
+    except ValueError:
+        return False
+
+    code = data.get("code")
+    success = data.get("success")
+    return resp.ok and code == "Success" and success is True and data.get("data") is not None
+
+
+def save_cached_token(username: str, token: str, now: float | None = None) -> None:
+    """保存 JWT 缓存。写入失败不影响本次运行。"""
+    if now is None:
+        now = time.time()
+    cache = {
+        "token": token,
+        "username_hash": _username_hash(username),
+        "obtained_at": int(now),
+        "expires_at": _token_expires_at(token, now),
+    }
+    try:
+        with open(TOKEN_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.chmod(TOKEN_CACHE_PATH, 0o600)
+    except Exception as e:
+        logging.warning("⚠ Token 缓存写入失败: %s", e)
+
+
 def fetch_token() -> str:
     """获取 JWT 令牌，失败时自动重试"""
+    cached_token = load_cached_token(STUDENT_ID)
+    if cached_token:
+        logging.info("正在验证本地缓存的认证令牌...")
+        if validate_token_with_server(cached_token):
+            logging.info("✅ 使用本地缓存的认证令牌")
+            return cached_token
+        logging.info("Token 缓存已被服务端判定失效，将重新认证")
+        remove_cached_token()
+
     max_attempts = 3
     for attempt in range(1, max_attempts + 1):
         try:
             logging.info("正在获取认证令牌...")
             token = get_gym_token(STUDENT_ID, PASSWORD)
+            save_cached_token(STUDENT_ID, token)
             logging.info("✅ 认证令牌获取成功")
             return token
         except GymAuthError as e:
-            logging.info(f"❌ 认证失败 (第{attempt}次): {e}")
-            if attempt == max_attempts:
-                raise
-            wait = 2 ** attempt
-            logging.info(f"   {wait} 秒后重试...")
-            time.sleep(wait)
+            logging.info(f"❌ 认证失败: {e}")
+            logging.info("   为避免重复触发短信验证码，本次认证错误不自动重试")
+            raise
         except requests.RequestException as e:
             logging.info(f"❌ 网络错误 (第{attempt}次): {e}")
             if attempt == max_attempts:

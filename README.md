@@ -4,11 +4,27 @@
 
 定时轮询订票接口，目标场次一旦有票自动下单并支付。认证通过 SSO 统一身份认证自动完成，**无需手动抓包 Token**。
 
-## 🚀 快速开始（GitHub Actions，推荐）
+> ⚠️ 统一身份认证已新增手机号短信验证码。本项目当前优先支持本地交互式登录：首次运行会发送短信验证码并要求在终端输入；成功后 JWT 会缓存 7 天，缓存有效期内再次运行无需重复短信验证。
+
+## 🚀 快速开始（本地运行，推荐）
+
+短信验证码需要交互输入，因此当前推荐本地运行：
+
+```bash
+pip install -r requirements.txt
+cp config.example.toml config.toml   # 编辑填入学号密码
+python3 SZTUGymBooker.py
+```
+
+首次认证成功后会生成 `.sztu_gym_token.json` 本地缓存文件。该文件已加入 `.gitignore`，不要手动提交或分享。
+
+Python 3.11+（3.10 需 `pip install tomli`）。
+
+## GitHub Actions（暂不推荐）
 
 无需自备服务器，Fork → 配置 → 一键抢票。
 
-> ⚠️ **平台建议**：优先使用 **iOS App** 或 **Web 端**触发。Android App 存在参数序列化兼容问题，可能导致失败。
+> ⚠️ 由于 SSO 登录现在要求手机号短信验证码，GitHub Actions 无法直接完成首次登录。可先使用本地运行完成认证并订票；Actions 的短信交互自动化不属于当前版本支持范围。
 
 ### 第 1 步：Fork 本仓库
 
@@ -70,17 +86,9 @@
 
 ---
 
-## 💻 本地运行
+## 💻 本地运行详情
 
 如需精准的定时执行（不受 GitHub Actions 延迟影响），可在本地部署 cron 或任务计划。
-
-```bash
-pip install -r requirements.txt
-cp config.example.toml config.toml   # 编辑填入学号密码
-python3 SZTUGymBooker.py
-```
-
-Python 3.11+（3.10 需 `pip install tomli`）。
 
 ### 配置文件 `config.toml`
 
@@ -128,7 +136,7 @@ webhook_url = ""            # 可选：飞书机器人 Webhook URL
 sessionlist → 获取目标场次 → create (轮询) → pay → 完成
 ```
 
-支持串行（每轮 1 请求）和并行（每轮 N 请求，`concurrency` 控制）两种模式，Token 过期自动刷新。
+支持串行（每轮 1 请求）和并行（每轮 N 请求，`concurrency` 控制）两种模式。Token 会本地缓存，过期或即将过期时自动重新走短信认证。
 
 ---
 

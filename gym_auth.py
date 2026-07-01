@@ -3,19 +3,14 @@ SZTU 体育馆 SSO 认证模块
 
 通过统一身份认证 (auth.sztu.edu.cn) 获取 gym.sztu.edu.cn 的 JWT 令牌。
 
-认证流程（两阶段）：
-  阶段一 — SAML 登录 auth.sztu.edu.cn：
-    1. 通过 jwxt.sztu.edu.cn 触发 SAML 重定向链
-    2. 导航 auth.sztu.edu.cn 登录页面
-    3. POST 登录凭据（DES 加密密码）
-    4. 完成 SAML 响应链 → 会话已认证
-  阶段二 — Gym OAuth2 Authorization Code 流程：
-    5. GET /idp/oauth2/authorize (client_id=23256178)
-    6. 跟随重定向: AuthnEngine → AuthorizationCode/SSO → gym 回调
-    7. 从 307 响应的 Location 头中提取 JWT
+认证流程：
+  1. 直接通过 gym OAuth2 authorize 进入统一身份认证
+  2. POST 登录凭据（DES 加密密码）
+  3. 若认证系统要求短信验证，发送短信验证码并提示用户输入
+  4. POST AuthnEngine 完成 OAuth2 Authorization Code 流程
+  5. 从 gym 307 响应的 Location 头中提取 JWT
 
-登录逻辑复用 sztu_course_selector.py Auth.login() 的核心代码。
-OAuth2 流程依据 auth2gym.har 抓包。
+OAuth2 流程依据 auth_phone.har 抓包。
 """
 
 import base64
@@ -38,9 +33,11 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # --- 常量 ---
 CLIENT_ID = "23256178"
 REDIRECT_URI = "https://gym.sztu.edu.cn/api/loginCheck"
-SP_AUTH_CHAIN_CODE = "cc2fdbc3599b48a69d5c82a665256b6b"
+GYM_SP_AUTH_CHAIN_CODE = "f3dd9170b8eb4c15bca650a2d7c7ea3f"
 DES_KEY = "PassB01Il71"
-ENTITY_ID = "jiaowu"
+ENTITY_ID = CLIENT_ID
+PASSWORD_AUTH_CLASS = "urn_oasis_names_tc_SAML_2.0_ac_classes_BAMUsernamePassword"
+SMS_AUTH_CLASS = "urn_oasis_names_tc_SAML_2.0_ac_classes_SMSUsernamePassword"
 # 认证请求超时（auth 服务器可能响应慢）
 AUTH_TIMEOUT = (10, 30)
 
@@ -68,8 +65,8 @@ def encrypt_password(password: str, key: str = DES_KEY) -> str:
 
 
 def _generate_state() -> str:
-    """生成随机 state 参数，格式: 2_<16位hex>"""
-    return f"2_{secrets.token_hex(8)}"
+    """生成随机 state 参数，格式与新版 Gym OAuth 抓包一致: 1_<16位hex>"""
+    return f"1_{secrets.token_hex(8)}"
 
 
 def _resolve_url(base: str, location: str) -> str:
@@ -86,8 +83,11 @@ def _resolve_url(base: str, location: str) -> str:
 class GymAuthenticator:
     """体育馆 SSO 认证器"""
 
-    def __init__(self):
+    def __init__(self, sms_code_provider=None):
         self.session = requests.session()
+        self.sms_code_provider = sms_code_provider or self._prompt_sms_code
+        self.sp_auth_chain_code = GYM_SP_AUTH_CHAIN_CODE
+        self._last_sms_code = ""
 
         retry_strategy = Retry(total=3, connect=3, backoff_factor=0.1)
         adapter = HTTPAdapter(
@@ -111,8 +111,6 @@ class GymAuthenticator:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9",
             "Accept-Encoding": "gzip, deflate, br",
-            # 以下头从 sztu_course_selector.py Auth 类继承，
-            # auth.sztu.edu.cn 会校验这些头才接受登录请求
             "Referer": (
                 "https://auth.sztu.edu.cn/idp/authcenter/"
                 f"ActionAuthChain?entityId={ENTITY_ID}"
@@ -140,6 +138,23 @@ class GymAuthenticator:
             url, timeout=AUTH_TIMEOUT, verify=False, allow_redirects=False
         )
 
+    def _navigation_get(self, url: str) -> requests.Response:
+        headers = {
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                "image/avif,image/webp,image/apng,*/*;q=0.8"
+            ),
+            "Content-Type": None,
+            "Origin": None,
+            "X-Requested-With": None,
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Dest": "document",
+        }
+        return self.session.get(
+            url, timeout=AUTH_TIMEOUT, verify=False, allow_redirects=False,
+            headers=headers,
+        )
+
     def _post(self, url: str, data: dict) -> requests.Response:
         return self.session.post(
             url, timeout=AUTH_TIMEOUT, verify=False, data=data,
@@ -155,102 +170,29 @@ class GymAuthenticator:
             )
         return location
 
-    # ==========================================================================
-    #  阶段一: SAML 登录 auth.sztu.edu.cn（复用 sztu_course_selector.py）
-    # ==========================================================================
-
-    def _login_auth_engine(self, username: str, password: str) -> None:
-        """
-        通过 jwxt 服务提供商触发 SAML 登录流程，
-        在 auth.sztu.edu.cn 上建立已认证会话。
-        与 sztu_course_selector.py Auth.login() 核心逻辑一致。
-        """
-        # Step 1: 访问 jwxt → 跟随 CAS 重定向到 auth.sztu.edu.cn
-        self.session.headers["Host"] = "jwxt.sztu.edu.cn"
-        resp = self._get("https://jwxt.sztu.edu.cn/")
-        resp = self._get(self._expect_redirect(resp, "jwxt redirect 1"))
-        resp = self._get(self._expect_redirect(resp, "jwxt redirect 2"))
-
-        # Step 2: 进入 auth.sztu.edu.cn
-        self.session.headers["Host"] = "auth.sztu.edu.cn"
-        self._get(self._expect_redirect(resp, "auth redirect"))
-
-        # Step 3: 导航 AuthnEngine → 登录页面
-        self._get("https://auth.sztu.edu.cn/idp/AuthnEngine")
-        self._get(
-            "https://auth.sztu.edu.cn/idp/authcenter/ActionAuthChain"
-            f"?entityId={ENTITY_ID}"
-        )
-
-        # 登录页 JS 设置 x=x cookie，手动补上
-        self.session.cookies.set("x", "x", domain="auth.sztu.edu.cn")
-
-        # Step 4: 提交登录凭据
-        login_data = {
-            "j_username": username,
-            "j_password": encrypt_password(password),
-            "j_checkcode": "验证码",
-            "op": "login",
-            "spAuthChainCode": SP_AUTH_CHAIN_CODE,
-        }
-        resp = self._post(
-            "https://auth.sztu.edu.cn/idp/authcenter/ActionAuthChain",
-            login_data,
-        )
-
+    @staticmethod
+    def _json(resp: requests.Response, step: str) -> dict:
         try:
-            resp_json = resp.json()
+            return resp.json()
         except ValueError:
-            raise GymAuthError(
-                f"登录响应非 JSON: {resp.text[:200]}"
-            )
+            raise GymAuthError(f"{step}: 响应非 JSON: {resp.text[:200]}")
 
-        if resp_json.get("loginFailed") != "false":
-            err_tip = resp_json.get("authnErrorTip", "")
-            raise GymAuthError(
-                f"登录失败，请检查学号密码是否正确"
-                + (f" ({err_tip})" if err_tip else "")
-            )
-
-        # Step 5: SAML 认证回传
-        resp = self._post(
-            "https://auth.sztu.edu.cn/idp/AuthnEngine"
-            "?currentAuth=urn_oasis_names_tc_SAML_2.0_ac_classes_BAMUsernamePassword",
-            data=login_data,
-        )
-        sso_url = self._expect_redirect(resp, "SAML AuthnEngine POST")
-
-        # Step 6: 跟随 SAML 响应链回到 jwxt
-        resp = self._get(sso_url)
-        logon_url = self._expect_redirect(resp, "SSO redirect")
-
-        self.session.headers["Host"] = "jwxt.sztu.edu.cn"
-        resp = self._get(logon_url)
-        login_to_tk_url = self._expect_redirect(resp, "logon redirect")
-
-        self._get(login_to_tk_url)
-        self._get("https://jwxt.sztu.edu.cn/jsxsd/framework/xsMain.htmlx")
-
-        # 此时 session 已持有 auth.sztu.edu.cn 的 _idp_session / SESSION 等 cookies
+    @staticmethod
+    def _prompt_sms_code(username: str) -> str:
+        return input(f"请输入学号 {username} 收到的短信验证码: ").strip()
 
     # ==========================================================================
-    #  阶段二: Gym OAuth2 Authorization Code 流程（依据 auth2gym.har）
+    #  Gym OAuth2 + SSO 登录
     # ==========================================================================
 
-    def _fetch_gym_jwt(self) -> str:
-        """
-        使用已认证的 session 完成 gym OAuth2 流程，返回 JWT 令牌。
-
-        依据 auth2gym.har 中已认证用户的请求序列：
-          GET /idp/oauth2/authorize?...client_id=23256178
-          → 302 → AuthnEngine → 302 → AuthorizationCode/SSO
-          → 302 → gym 回调 (含 code)
-          → 307 → /oauthLogin?token=<JWT>
-        """
-        state = _generate_state()
-
-        # Step A: 发起 gym OAuth2 授权请求
+    def _open_gym_login(self, state: str) -> None:
+        """进入 Gym OAuth 登录页，建立后续登录所需的认证上下文。"""
         self.session.headers["Host"] = "auth.sztu.edu.cn"
+        self.session.headers["Referer"] = (
+            "https://auth.sztu.edu.cn/idp/authcenter/"
+            f"ActionAuthChain?entityId={ENTITY_ID}"
+        )
+
         auth_url = (
             "https://auth.sztu.edu.cn/idp/oauth2/authorize"
             f"?response_type=code"
@@ -261,24 +203,92 @@ class GymAuthenticator:
         resp = self._get(auth_url)
         loc = self._expect_redirect(resp, "OAuth2 authorize")
 
-        # 检查会话是否有效（若被重定向到登录页则说明会话过期）
-        if "ActionAuthChain" in loc or "login" in loc.lower():
-            raise GymAuthError("认证会话已过期，需要重新登录")
-
-        # Step B: AuthnEngine
         resp = self._get(_resolve_url("https://auth.sztu.edu.cn", loc))
         loc = self._expect_redirect(resp, "AuthnEngine")
 
-        # Step C: AuthorizationCode/SSO → 获取授权码
-        resp = self._get(_resolve_url("https://auth.sztu.edu.cn", loc))
-        callback_url = self._expect_redirect(resp, "AuthorizationCode/SSO")
+        if "AuthorizationCode/SSO" in loc:
+            return
 
-        # Step D: gym 回调 → 获取 JWT
+        self._get(_resolve_url("https://auth.sztu.edu.cn", loc))
+
+        # 登录页 JS 设置 x=x cookie，手动补上
+        self.session.cookies.set("x", "x", domain="auth.sztu.edu.cn")
+
+    def _submit_password(self, username: str, password: str) -> dict:
+        login_data = self._password_login_data(username, password)
+        resp = self._post(
+            "https://auth.sztu.edu.cn/idp/authcenter/ActionAuthChain",
+            login_data,
+        )
+        return self._json(resp, "密码登录")
+
+    def _password_login_data(self, username: str, password: str) -> dict:
+        return {
+            "j_username": username,
+            "j_password": encrypt_password(password),
+            "j_checkcode": "验证码",
+            "op": "login",
+            "spAuthChainCode": self.sp_auth_chain_code,
+        }
+
+    def _sms_login_data(self, username: str, sms_code: str) -> dict:
+        return {
+            "j_username": username,
+            "sms_checkcode": sms_code,
+            "popViewException": "Pop2",
+            "op": "login",
+            "spAuthChainCode": self.sp_auth_chain_code,
+            "j_checkcode": "验证码",
+        }
+
+    def _send_sms_code(self, username: str) -> None:
+        resp = self._post(
+            "https://auth.sztu.edu.cn/idp/sendSMSCheckCode.do",
+            {"j_username": username},
+        )
+        data = self._json(resp, "发送短信验证码")
+        if str(data.get("flag")).lower() != "true":
+            message = data.get("message") or data.get("msg") or data
+            raise GymAuthError(f"短信验证码发送失败: {message}")
+
+    def _submit_sms_code(self, username: str) -> dict:
+        self._send_sms_code(username)
+        sms_code = self.sms_code_provider(username)
+        if not sms_code:
+            raise GymAuthError("短信验证码不能为空")
+        self._last_sms_code = sms_code
+
+        resp = self._post(
+            "https://auth.sztu.edu.cn/idp/authcenter/ActionAuthChain",
+            self._sms_login_data(username, sms_code),
+        )
+        return self._json(resp, "短信验证码登录")
+
+    def _complete_authn_engine(self, auth_class: str, data: dict) -> str:
+        resp = self._post(
+            "https://auth.sztu.edu.cn/idp/AuthnEngine"
+            f"?currentAuth={auth_class}",
+            data=data,
+        )
+        return self._expect_redirect(resp, "AuthnEngine POST")
+
+    def _fetch_callback_from_sso(self, sso_url: str) -> str:
+        self.session.headers["Host"] = "auth.sztu.edu.cn"
+        resp = self._navigation_get(
+            _resolve_url("https://auth.sztu.edu.cn", sso_url)
+        )
+        return self._expect_redirect(resp, "AuthorizationCode/SSO")
+
+    def _fetch_jwt_after_authn(self, sso_url: str, state: str) -> str:
+        callback_url = self._fetch_callback_from_sso(sso_url)
+        return self._extract_jwt_from_callback(callback_url, state)
+
+    def _extract_jwt_from_callback(self, callback_url: str, state: str) -> str:
         self.session.headers["Host"] = "gym.sztu.edu.cn"
-        resp = self._get(callback_url)
+        self.session.headers["Referer"] = "https://auth.sztu.edu.cn/"
+        resp = self._navigation_get(callback_url)
         redirect_url = self._expect_redirect(resp, "gym callback")
 
-        # 解析 JWT
         token_full_url = _resolve_url("https://gym.sztu.edu.cn", redirect_url)
         parsed = urlparse(token_full_url)
         params = parse_qs(parsed.query)
@@ -289,7 +299,6 @@ class GymAuthenticator:
                 f"回调 URL 中未找到 token 参数: {token_full_url[:120]}"
             )
 
-        # 验证 state 参数
         returned_state = params.get("state", [None])[0]
         if returned_state != state:
             raise GymAuthError(
@@ -298,13 +307,63 @@ class GymAuthenticator:
 
         return token
 
+    def _login_and_fetch_gym_jwt(self, username: str, password: str) -> str:
+        state = _generate_state()
+        self._open_gym_login(state)
+
+        password_resp = self._submit_password(username, password)
+
+        if password_resp.get("loginFailed") == "false":
+            sso_url = self._complete_authn_engine(
+                PASSWORD_AUTH_CLASS,
+                self._password_login_data(username, password),
+            )
+            return self._fetch_jwt_after_authn(sso_url, state)
+
+        if str(password_resp.get("view")) == "4":
+            chain_code = password_resp.get("currentAuChainCodeEx")
+            if chain_code:
+                self.sp_auth_chain_code = chain_code
+
+            sms_resp = self._submit_sms_code(username)
+            if sms_resp.get("loginFailed") != "false":
+                err_tip = (
+                    sms_resp.get("authnErrorTip")
+                    or sms_resp.get("loginErrorKey")
+                    or sms_resp.get("message")
+                    or sms_resp.get("msg")
+                    or ""
+                )
+                raise GymAuthError(
+                    "短信验证码登录失败"
+                    + (f" ({err_tip})" if err_tip else "")
+                )
+
+            sso_url = self._complete_authn_engine(
+                SMS_AUTH_CLASS,
+                self._sms_login_data(username, self._last_sms_code),
+            )
+            return self._fetch_jwt_after_authn(sso_url, state)
+
+        err_tip = (
+            password_resp.get("authnErrorTip")
+            or password_resp.get("loginErrorKey")
+            or password_resp.get("message")
+            or password_resp.get("msg")
+            or ""
+        )
+        raise GymAuthError(
+            "登录失败，请检查学号密码是否正确"
+            + (f" ({err_tip})" if err_tip else "")
+        )
+
     # ==========================================================================
     #  公共入口
     # ==========================================================================
 
     def get_token(self, username: str, password: str) -> str:
         """
-        完整认证流程：SAML 登录 → OAuth2 → 获取 JWT 令牌。
+        完整认证流程：Gym OAuth2 登录 → 获取 JWT 令牌。
 
         Args:
             username: 学号
@@ -316,17 +375,16 @@ class GymAuthenticator:
         Raises:
             GymAuthError: 认证失败
         """
-        self._login_auth_engine(username, password)
-        return self._fetch_gym_jwt()
+        return self._login_and_fetch_gym_jwt(username, password)
 
 
 # ==============================================================================
 #  便捷函数
 # ==============================================================================
 
-def get_gym_token(username: str, password: str) -> str:
+def get_gym_token(username: str, password: str, sms_code_provider=None) -> str:
     """获取体育馆 JWT 令牌的便捷函数"""
-    auth = GymAuthenticator()
+    auth = GymAuthenticator(sms_code_provider=sms_code_provider)
     return auth.get_token(username, password)
 
 

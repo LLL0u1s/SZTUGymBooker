@@ -2,9 +2,9 @@
 
 ## 认证方式
 
-Token 由 `gym_auth.py` 通过 SSO 统一身份认证自动获取（学号 + 密码 → auth.sztu.edu.cn SAML 登录 → Gym OAuth2 → JWT），无需手动抓包。
+Token 由 `gym_auth.py` 通过 SSO 统一身份认证自动获取（Gym OAuth2 → 学号密码 → 手机短信验证码 → JWT），无需手动抓包。
 
-认证模块在 `SZTUGymBooker.py` 启动时自动调用，token 过期后自动刷新。
+认证模块在 `SZTUGymBooker.py` 启动时自动调用。首次本地运行需要在终端输入短信验证码；成功后 JWT 缓存在 `.sztu_gym_token.json`，有效期内直接复用，过期或即将过期后自动重新认证。
 
 ## 配置参数
 
@@ -108,15 +108,12 @@ POST /mapi/pay/pay
 `gym_auth.py` 内部执行两阶段认证：
 
 ```text
-阶段一 — SAML 登录 auth.sztu.edu.cn（复用 sztu_course_selector.py 模式）
-  jwxt.sztu.edu.cn → 302 重定向链 → auth.sztu.edu.cn
-  → AuthnEngine → ActionAuthChain?entityId=jiaowu
-  → POST 登录凭据（DES-ECB 加密密码，key=PassB01Il71）
-  → SAML AuthnEngine → SSO 响应链 → 会话已认证
-
-阶段二 — Gym OAuth2 Authorization Code 流程（依据 auth2gym.har）
+阶段一 — Gym OAuth2 Authorization Code 登录入口（依据 auth_phone.har）
   GET /idp/oauth2/authorize?client_id=23256178&response_type=code&state=...
-  → AuthnEngine → AuthorizationCode/SSO
+  → AuthnEngine → ActionAuthChain?entityId=23256178
+  → POST 登录凭据（DES-ECB 加密密码，key=PassB01Il71）
+  → 若返回 view=4，POST /idp/sendSMSCheckCode.do 并提示输入短信验证码
+  → POST 短信验证码 → AuthnEngine → AuthorizationCode/SSO
   → gym.sztu.edu.cn/api/loginCheck?code=...（307 重定向，Location 含 JWT）
   → 解析 token 参数，验证 state 匹配
 ```
@@ -127,6 +124,6 @@ POST /mapi/pay/pay
 | ----------------- | ---------------------------------------- |
 | `client_id`       | `23256178`                               |
 | `redirect_uri`    | `https://gym.sztu.edu.cn/api/loginCheck` |
-| `spAuthChainCode` | `cc2fdbc3599b48a69d5c82a665256b6b`       |
-| `entityId`        | `jiaowu`                                 |
+| `spAuthChainCode` | `f3dd9170b8eb4c15bca650a2d7c7ea3f`       |
+| `entityId`        | `23256178`                               |
 | DES key           | `PassB01Il71`                            |

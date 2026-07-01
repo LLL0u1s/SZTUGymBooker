@@ -1,6 +1,7 @@
 config.toml
 config.local.toml
 .env
+.sztu_gym_token.json
 .claude
 __pycache__
 *.har
